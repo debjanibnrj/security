@@ -17,6 +17,10 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl.util;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.DefaultOpenDistroSecurityKeyStore;
+import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyStore;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelPipeline;
 import io.netty.handler.ssl.SslHandler;
 
 import java.io.File;
@@ -35,8 +39,10 @@ import java.util.Date;
 import java.util.Map.Entry;
 
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSessionContext;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -103,6 +109,49 @@ public class SSLRequestHelper {
         }
 
     }
+
+
+    public static SSLInfo updateSSLChannel(OpenDistroSecurityKeyStore odsks, final Settings settings, final Path configPath, final RestRequest request,
+                                           PrincipalExtractor principalExtractor) throws SSLPeerUnverifiedException {
+
+        if(request == null || request.getHttpChannel() == null || !(request.getHttpChannel() instanceof Netty4HttpChannel)) {
+            return null;
+        }
+
+        log.info("Trying to get SSL Handler");
+
+        odsks.updateCerts();
+
+        final Channel nettyChannel = ((Netty4HttpChannel)request.getHttpChannel()).getNettyChannel();
+
+        log.info("Channel ID is: {}", nettyChannel.id());
+        final SslHandler sslhandler = (SslHandler) nettyChannel.pipeline().get("ssl_server");
+
+        log.info("Sslhandler is "+ sslhandler);
+
+        //To restart the SSL session,
+        log.info("Restarting the SSL Session");
+        //1. you must remove the existing closed SslHandler from the ChannelPipeline,
+
+        //2. insert a new SslHandler with a new SSLEngine into the pipeline, and
+        final SSLEngine engine;
+        try {
+            ChannelPipeline pipeline = ((Netty4HttpChannel)request.getHttpChannel()).getNettyChannel().pipeline();
+            engine = ((DefaultOpenDistroSecurityKeyStore) odsks).createServerTransportSSLEngine();
+                final SslHandler newSslHandler = new SslHandler(engine);
+                pipeline.replace(sslhandler, "ssl_server", newSslHandler);
+
+                //3. start the handshake process as described in the first section.
+                pipeline.addFirst("ssl_server", newSslHandler);
+
+                log.info("Channel ID is: {}", nettyChannel.id());
+        } catch (SSLException e) {
+            log.debug(e);
+            e.printStackTrace();
+        }
+        return getSSLInfo(settings, configPath, request, principalExtractor);
+    }
+
 
     public static SSLInfo getSSLInfo(final Settings settings, final Path configPath, final RestRequest request, PrincipalExtractor principalExtractor) throws SSLPeerUnverifiedException {
         

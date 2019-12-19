@@ -62,16 +62,13 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
             final PageCacheRecycler pageCacheRecycler, final NamedWriteableRegistry namedWriteableRegistry,
             final CircuitBreakerService circuitBreakerService, final OpenDistroSecurityKeyStore odsks, final SslExceptionHandler errorHandler) {
         super(settings, version, threadPool, networkService, pageCacheRecycler, namedWriteableRegistry, circuitBreakerService);
-
         this.odsks = odsks;
         this.errorHandler = errorHandler;
     }
 
     @Override
     public void onException(TcpChannel channel, Exception e) {
-
         if (lifecycle.started()) {
-            
             Throwable cause = e;
             
             if(e instanceof DecoderException && e != null) {
@@ -97,6 +94,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         super.onException(channel, e);
     }
 
+
     @Override
     protected ChannelHandler getServerChannelInitializer(String name) {
         return new SSLServerChannelInitializer(name);
@@ -108,16 +106,19 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
     }
 
     protected class SSLServerChannelInitializer extends Netty4Transport.ServerChannelInitializer {
-
         public SSLServerChannelInitializer(String name) {
             super(name);
         }
 
         @Override
         protected void initChannel(Channel ch) throws Exception {
+            logger.info("@SSLServerChannelInitializer");
             super.initChannel(ch);
-            final SslHandler sslHandler = new SslHandler(odsks.createServerTransportSSLEngine());
+            final SSLEngine engine = odsks.createServerTransportSSLEngine();
+            final SslHandler sslHandler = new SslHandler(engine);
             ch.pipeline().addFirst("ssl_server", sslHandler);
+            logger.info("engine.getUseClientMode() Is handshake complete: {} ", engine.getUseClientMode());
+
         }
         
         @Override
@@ -159,6 +160,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
 
         private ClientSSLHandler(final OpenDistroSecurityKeyStore odsks, final boolean hostnameVerificationEnabled,
                 final boolean hostnameVerificationResovleHostName, final SslExceptionHandler errorHandler) {
+            logger.info("@ClientSSLHandler");
             this.odsks = odsks;
             this.hostnameVerificationEnabled = hostnameVerificationEnabled;
             this.hostnameVerificationResovleHostName = hostnameVerificationResovleHostName;
@@ -228,6 +230,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         private final boolean hostnameVerificationResovleHostName;
 
         public SSLClientChannelInitializer(DiscoveryNode node) {
+            logger.info("@SSLClientChannelInitializer");
             hostnameVerificationEnabled = settings.getAsBoolean(
                     SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, true);
             hostnameVerificationResovleHostName = settings.getAsBoolean(
@@ -244,7 +247,6 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         @Override
         public final void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
             if(OpenDistroSecuritySSLNettyTransport.this.lifecycle.started()) {
-                
                 if(cause instanceof DecoderException && cause != null) {
                     cause = cause.getCause();
                 }

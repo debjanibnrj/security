@@ -101,7 +101,12 @@ public class ExternalOpenDistroSecurityKeyStore implements OpenDistroSecurityKey
     public String getTransportClientProviderName() {
         return EXTERNAL;
     }
-    
+
+    @Override
+    public void updateCerts() {
+        return;
+    }
+
     public static void registerExternalSslContext(String id, SSLContext externalSsslContext) {
         contextMap.put(Objects.requireNonNull(id), Objects.requireNonNull(externalSsslContext));
     }

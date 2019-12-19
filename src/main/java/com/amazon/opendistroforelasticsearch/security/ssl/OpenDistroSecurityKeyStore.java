@@ -26,10 +26,11 @@ public interface OpenDistroSecurityKeyStore {
 
     public SSLEngine createServerTransportSSLEngine() throws SSLException;
 
-    public SSLEngine createClientTransportSSLEngine(String peerHost, int peerPort) throws SSLException;
 
+    public SSLEngine createClientTransportSSLEngine(String peerHost, int peerPort) throws SSLException;
     public String getHTTPProviderName();
     public String getTransportServerProviderName();
     public String getTransportClientProviderName();
+    public void updateCerts();
     
 }

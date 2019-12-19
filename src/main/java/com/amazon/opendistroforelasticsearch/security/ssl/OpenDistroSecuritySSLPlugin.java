@@ -17,6 +17,7 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.rest.OpenDistroUpdateSSLCertificatesAction;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.util.internal.PlatformDependent;
 
@@ -225,6 +226,7 @@ public class OpenDistroSecuritySSLPlugin extends Plugin implements ActionPlugin,
         
         if (!client) {
             handlers.add(new OpenDistroSecuritySSLInfoAction(settings, configPath, restController, odsks, Objects.requireNonNull(principalExtractor)));
+            handlers.add(new OpenDistroUpdateSSLCertificatesAction(settings, configPath, restController, odsks, Objects.requireNonNull(principalExtractor)));
         }
         
         return handlers;
@@ -237,7 +239,7 @@ public class OpenDistroSecuritySSLPlugin extends Plugin implements ActionPlugin,
         List<TransportInterceptor> interceptors = new ArrayList<TransportInterceptor>(1);
         
         if(transportSSLEnabled && !client) {
-            interceptors.add(new OpenDistroSecuritySSLTransportInterceptor(settings, null, null, NOOP_SSL_EXCEPTION_HANDLER));
+            interceptors.add(new OpenDistroSecuritySSLTransportInterceptor(settings, null, null, NOOP_SSL_EXCEPTION_HANDLER, odsks, configPath));
         }
         
         return interceptors;
