@@ -16,7 +16,6 @@
  */
 
 package com.amazon.opendistroforelasticsearch.security.ssl;
-
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.handler.ssl.ApplicationProtocolConfig;
 import io.netty.handler.ssl.ClientAuth;
@@ -27,17 +26,28 @@ import io.netty.handler.ssl.SslProvider;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.AccessController;
+import java.security.KeyFactory;
 import java.security.KeyStore;
+import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -47,6 +57,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import javax.crypto.Cipher;
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
@@ -54,6 +65,8 @@ import javax.net.ssl.SSLParameters;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchSecurityException;
 import org.elasticsearch.SpecialPermission;
@@ -68,19 +81,6 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
     private static final String DEFAULT_STORE_TYPE = "JKS";
 
-    private void printJCEWarnings() {
-        try {
-            final int aesMaxKeyLength = Cipher.getMaxAllowedKeyLength("AES");
-
-            if (aesMaxKeyLength < 256) {
-                log.info("AES-256 not supported, max key length for AES is " + aesMaxKeyLength + " bit."
-                        + " (This is not an issue, it just limits possible encryption strength. To enable AES 256, install 'Java Cryptography Extension (JCE) Unlimited Strength Jurisdiction Policy Files')");
-            }
-        } catch (final NoSuchAlgorithmException e) {
-            log.error("AES encryption not supported (SG 1). " + e);
-        }
-    }
-
     private final Settings settings;
     private final Logger log = LogManager.getLogger(this.getClass());
     public final SslProvider sslHTTPProvider;
@@ -88,24 +88,27 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
     public final SslProvider sslTransportClientProvider;
     private final boolean httpSSLEnabled;
     private final boolean transportSSLEnabled;
-    
+
     private List<String> enabledHttpCiphersJDKProvider;
     private List<String> enabledHttpCiphersOpenSSLProvider;
     private List<String> enabledTransportCiphersJDKProvider;
     private List<String> enabledTransportCiphersOpenSSLProvider;
-    
+
     private List<String> enabledHttpProtocolsJDKProvider;
     private List<String> enabledHttpProtocolsOpenSSLProvider;
     private List<String> enabledTransportProtocolsJDKProvider;
     private List<String> enabledTransportProtocolsOpenSSLProvider;
-    
+
     private SslContext httpSslContext;
     private SslContext transportServerSslContext;
     private SslContext transportClientSslContext;
     private final Environment env;
+    private KeyManagerFactory clientKMF;
+    private KeyManagerFactory serverKMF;
 
     public DefaultOpenDistroSecurityKeyStore(final Settings settings, final Path configPath) {
         super();
+        log.info("bdebjani: DefaultOpenDistroSecurityKeyStore constructor: ");
         this.settings = settings;
         Environment _env;
         try {
@@ -151,27 +154,23 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         initSSLConfig();
         printJCEWarnings();
 
-        log.info("TLS Transport Client Provider : {}", sslTransportClientProvider);
-        log.info("TLS Transport Server Provider : {}", sslTransportServerProvider);
-        log.info("TLS HTTP Provider             : {}", sslHTTPProvider);
-
-        log.debug("sslTransportClientProvider:{} with ciphers {}", sslTransportClientProvider,
+        log.info("bdebjani: sslTransportClientProvider:{} with ciphers {}", sslTransportClientProvider,
                 getEnabledSSLCiphers(sslTransportClientProvider, false));
-        log.debug("sslTransportServerProvider:{} with ciphers {}", sslTransportServerProvider,
+        log.info("bdebjani: sslTransportServerProvider:{} with ciphers {}", sslTransportServerProvider,
                 getEnabledSSLCiphers(sslTransportServerProvider, false));
-        log.debug("sslHTTPProvider:{} with ciphers {}", sslHTTPProvider, getEnabledSSLCiphers(sslHTTPProvider, true));
+        log.info("bdebjani: sslHTTPProvider:{} with ciphers {}", sslHTTPProvider, getEnabledSSLCiphers(sslHTTPProvider, true));
 
-        log.info("Enabled TLS protocols for transport layer : {}",
+        log.info("bdebjani: Enabled TLS protocols for transport layer : {}",
                 Arrays.toString(getEnabledSSLProtocols(sslTransportServerProvider, false)));
-        log.info("Enabled TLS protocols for HTTP layer      : {}",
+        log.info("bdebjani: Enabled TLS protocols for HTTP layer      : {}",
                 Arrays.toString(getEnabledSSLProtocols(sslHTTPProvider, true)));
-        
-        
-        log.debug("sslTransportClientProvider:{} with protocols {}", sslTransportClientProvider,
+
+
+        log.info("bdebjani: sslTransportClientProvider:{} with protocols {}", sslTransportClientProvider,
                 getEnabledSSLProtocols(sslTransportClientProvider, false));
-        log.debug("sslTransportServerProvider:{} with protocols {}", sslTransportServerProvider,
+        log.info("bdebjani: sslTransportServerProvider:{} with protocols {}", sslTransportServerProvider,
                 getEnabledSSLProtocols(sslTransportServerProvider, false));
-        log.debug("sslHTTPProvider:{} with protocols {}", sslHTTPProvider, getEnabledSSLProtocols(sslHTTPProvider, true));
+        log.info("bdebjani: sslHTTPProvider:{} with protocols {}", sslHTTPProvider, getEnabledSSLProtocols(sslHTTPProvider, true));
 
         if (transportSSLEnabled && (getEnabledSSLCiphers(sslTransportClientProvider, false).isEmpty()
                 || getEnabledSSLCiphers(sslTransportServerProvider, false).isEmpty())) {
@@ -185,7 +184,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         if (transportSSLEnabled && getEnabledSSLCiphers(sslTransportServerProvider, false).isEmpty()) {
             throw new ElasticsearchSecurityException("no ssl protocols for transport protocol");
         }
-        
+
         if (transportSSLEnabled && getEnabledSSLCiphers(sslTransportClientProvider, false).isEmpty()) {
             throw new ElasticsearchSecurityException("no ssl protocols for transport protocol");
         }
@@ -195,93 +194,180 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
     }
 
-    private String resolve(String propName, boolean mustBeValid) {
+    // Determines Enabled SSL Ciphers
+    private void initEnabledSSLCiphers() {
 
-        final String originalPath = settings.get(propName, null);
-        String path = originalPath;
-        log.debug("Value for {} is {}", propName, originalPath);
+        final List<String> secureHttpSSLCiphers = SSLConfigConstants.getSecureSSLCiphers(settings, true);
+        final List<String> secureTransportSSLCiphers = SSLConfigConstants.getSecureSSLCiphers(settings, false);
+        final List<String> secureHttpSSLProtocols = Arrays.asList(SSLConfigConstants.getSecureSSLProtocols(settings, true));
+        final List<String> secureTransportSSLProtocols = Arrays.asList(SSLConfigConstants.getSecureSSLProtocols(settings, false));
 
-        if (env != null && originalPath != null && originalPath.length() > 0) {
-            path = env.configFile().resolve(originalPath).toAbsolutePath().toString();
-            log.debug("Resolved {} to {} against {}", originalPath, path, env.configFile().toAbsolutePath().toString());
+        if (OpenSsl.isAvailable()) {
+            final Set<String> openSSLSecureHttpCiphers = new HashSet<>();
+            for (final String secure : secureHttpSSLCiphers) {
+                if (OpenSsl.isCipherSuiteAvailable(secure)) {
+                    openSSLSecureHttpCiphers.add(secure);
+                }
+            }
+
+
+            log.info("OPENSSL "+OpenSsl.versionString()+" supports the following ciphers (java-style) {}", OpenSsl.availableJavaCipherSuites());
+            log.info("OPENSSL "+OpenSsl.versionString()+" supports the following ciphers (openssl-style) {}", OpenSsl.availableOpenSslCipherSuites());
+
+            enabledHttpCiphersOpenSSLProvider = Collections
+                .unmodifiableList(new ArrayList<String>(openSSLSecureHttpCiphers));
+        } else {
+            enabledHttpCiphersOpenSSLProvider = Collections.emptyList();
         }
 
-        if (mustBeValid) {
-            checkPath(path, propName);
+        if (OpenSsl.isAvailable()) {
+            final Set<String> openSSLSecureTransportCiphers = new HashSet<>();
+            for (final String secure : secureTransportSSLCiphers) {
+                if (OpenSsl.isCipherSuiteAvailable(secure)) {
+                    openSSLSecureTransportCiphers.add(secure);
+                }
+            }
+
+            enabledTransportCiphersOpenSSLProvider = Collections
+                .unmodifiableList(new ArrayList<String>(openSSLSecureTransportCiphers));
+        } else {
+            enabledTransportCiphersOpenSSLProvider = Collections.emptyList();
         }
 
-        if ("".equals(path)) {
-            path = null;
+        if(OpenSsl.isAvailable() && OpenSsl.version() > 0x10101009L) {
+            enabledHttpProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.3","TLSv1.2","TLSv1.1","TLSv1"));
+            enabledHttpProtocolsOpenSSLProvider.retainAll(secureHttpSSLProtocols);
+            enabledTransportProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.3","TLSv1.2","TLSv1.1"));
+            enabledTransportProtocolsOpenSSLProvider.retainAll(secureTransportSSLProtocols);
+
+            log.info("OpenSSL supports TLSv1.3");
+
+        } else if(OpenSsl.isAvailable()){
+            enabledHttpProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.2","TLSv1.1","TLSv1"));
+            enabledHttpProtocolsOpenSSLProvider.retainAll(secureHttpSSLProtocols);
+            enabledTransportProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.2","TLSv1.1"));
+            enabledTransportProtocolsOpenSSLProvider.retainAll(secureTransportSSLProtocols);
+        } else {
+            enabledHttpProtocolsOpenSSLProvider = Collections.emptyList();
+            enabledTransportProtocolsOpenSSLProvider = Collections.emptyList();
         }
 
-        return path;
+        SSLEngine engine = null;
+        List<String> jdkSupportedCiphers = null;
+        List<String> jdkSupportedProtocols = null;
+        try {
+            final SSLContext serverContext = SSLContext.getInstance("TLS");
+            serverContext.init(null, null, null);
+            engine = serverContext.createSSLEngine();
+            jdkSupportedCiphers = Arrays.asList(engine.getEnabledCipherSuites());
+            jdkSupportedProtocols = Arrays.asList(engine.getEnabledProtocols());
+            log.info("JVM supports the following {} protocols {}", jdkSupportedProtocols.size(),
+                jdkSupportedProtocols);
+            log.info("JVM supports the following {} ciphers {}", jdkSupportedCiphers.size(),
+                jdkSupportedCiphers);
+
+            if(jdkSupportedProtocols.contains("TLSv1.3")) {
+                log.info("JVM supports TLSv1.3");
+            }
+
+        } catch (final Throwable e) {
+            log.error("Unable to determine supported ciphers due to " + e, e);
+        } finally {
+            if (engine != null) {
+                try {
+                    engine.closeInbound();
+                } catch (SSLException e) {
+                    log.info("Unable to close inbound ssl engine", e);
+                }
+                engine.closeOutbound();
+            }
+        }
+
+        if(jdkSupportedCiphers == null || jdkSupportedCiphers.isEmpty() || jdkSupportedProtocols == null || jdkSupportedProtocols.isEmpty()) {
+            throw new ElasticsearchException("Unable to determine supported ciphers or protocols");
+        }
+
+        enabledHttpCiphersJDKProvider = new ArrayList<String>(jdkSupportedCiphers);
+        enabledHttpCiphersJDKProvider.retainAll(secureHttpSSLCiphers);
+
+        enabledTransportCiphersJDKProvider = new ArrayList<String>(jdkSupportedCiphers);
+        enabledTransportCiphersJDKProvider.retainAll(secureTransportSSLCiphers);
+
+        enabledHttpProtocolsJDKProvider = new ArrayList<String>(jdkSupportedProtocols);
+        enabledHttpProtocolsJDKProvider.retainAll(secureHttpSSLProtocols);
+
+        enabledTransportProtocolsJDKProvider = new ArrayList<String>(jdkSupportedProtocols);
+        enabledTransportProtocolsJDKProvider.retainAll(secureTransportSSLProtocols);
     }
 
+    // Builds the SSL context for the client and the server
     private void initSSLConfig() {
 
         if (env == null) {
             log.info("No config directory, key- and truststore files are resolved absolutely");
         } else {
             log.info("Config directory is {}/, from there the key- and truststore files are resolved relatively",
-                    env.configFile().toAbsolutePath());
+                env.configFile().toAbsolutePath());
         }
-
+        // init transport level ssl context
         if (transportSSLEnabled) {
 
             final String rawKeyStoreFilePath = settings
-                    .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH, null);
+                .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH, null);
             final String rawPemCertFilePath = settings
-                    .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, null);
+                .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, null);
 
+            // Note: not used
             if (rawKeyStoreFilePath != null) {
-
                 final String keystoreFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH,
-                        true);
+                    true);
                 final String keystoreType = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_TYPE,
-                        DEFAULT_STORE_TYPE);
+                    DEFAULT_STORE_TYPE);
+
                 final String keystorePassword = settings.get(
-                        SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_PASSWORD,
-                        SSLConfigConstants.DEFAULT_STORE_PASSWORD);
-                
+                    SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_PASSWORD,
+                    SSLConfigConstants.DEFAULT_STORE_PASSWORD);
+
                 final String keyPassword = settings.get(
-                        SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_KEYPASSWORD,
-                        keystorePassword);
-                
+                    SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_KEYPASSWORD,
+                    keystorePassword);
+
                 final String keystoreAlias = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_ALIAS,
-                        null);
+                    null);
 
                 final String truststoreFilePath = resolve(
-                        SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH, true);
+                    SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH, true);
 
                 if (settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH, null) == null) {
                     throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH
-                            + " must be set if transport ssl is requested.");
+                        + " must be set if transport ssl is requested.");
                 }
 
                 final String truststoreType = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_TYPE,
-                        DEFAULT_STORE_TYPE);
+                    DEFAULT_STORE_TYPE);
                 final String truststorePassword = settings.get(
-                        SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_PASSWORD,
-                        SSLConfigConstants.DEFAULT_STORE_PASSWORD);
+                    SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_PASSWORD,
+                    SSLConfigConstants.DEFAULT_STORE_PASSWORD);
                 final String truststoreAlias = settings
-                        .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_ALIAS, null);
+                    .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_ALIAS, null);
 
                 try {
 
                     final KeyStore ks = KeyStore.getInstance(keystoreType);
                     ks.load(new FileInputStream(new File(keystoreFilePath)),
-                            (keystorePassword == null || keystorePassword.length() == 0) ? null
-                                    : keystorePassword.toCharArray());
+                        (keystorePassword == null || keystorePassword.length() == 0) ? null
+                            : keystorePassword.toCharArray());
 
                     final X509Certificate[] transportKeystoreCert = SSLCertificateHelper.exportServerCertChain(ks,
-                            keystoreAlias);
-                    final PrivateKey transportKeystoreKey = SSLCertificateHelper.exportDecryptedKey(ks, keystoreAlias,
-                            (keyPassword == null || keyPassword.length() == 0) ? null
-                                    : keyPassword.toCharArray());
+                        keystoreAlias);
 
+                    final PrivateKey transportKeystoreKey = SSLCertificateHelper.exportDecryptedKey(ks, keystoreAlias,
+                        (keyPassword == null || keyPassword.length() == 0) ? null
+                            : keyPassword.toCharArray());
+                    log.info("transportKeystoreKey is " + transportKeystoreKey);
                     if (transportKeystoreKey == null) {
                         throw new ElasticsearchException(
-                                "No key found in " + keystoreFilePath + " with alias " + keystoreAlias);
+                            "No key found in " + keystoreFilePath + " with alias " + keystoreAlias);
                     }
 
                     if (transportKeystoreCert != null && transportKeystoreCert.length > 0) {
@@ -290,113 +376,118 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                         /*
                          * for (int i = 0; i < transportKeystoreCert.length; i++) { X509Certificate
                          * x509Certificate = transportKeystoreCert[i];
-                         * 
+                         *
                          * if(x509Certificate != null) {
                          * log.info("Transport keystore subject DN no. {} {}",i,x509Certificate.
                          * getSubjectX500Principal()); } }
                          */
                     } else {
                         throw new ElasticsearchException(
-                                "No certificates found in " + keystoreFilePath + " with alias " + keystoreAlias);
+                            "No certificates found in " + keystoreFilePath + " with alias " + keystoreAlias);
                     }
 
                     final KeyStore ts = KeyStore.getInstance(truststoreType);
                     ts.load(new FileInputStream(new File(truststoreFilePath)),
-                            (truststorePassword == null || truststorePassword.length() == 0) ? null
-                                    : truststorePassword.toCharArray());
+                        (truststorePassword == null || truststorePassword.length() == 0) ? null
+                            : truststorePassword.toCharArray());
 
                     final X509Certificate[] trustedTransportCertificates = SSLCertificateHelper
-                            .exportRootCertificates(ts, truststoreAlias);
+                        .exportRootCertificates(ts, truststoreAlias);
+                    log.info("trustedTransportCertificates.length is " + trustedTransportCertificates.length);
 
                     if (trustedTransportCertificates == null) {
                         throw new ElasticsearchException("No truststore configured for server");
                     }
 
                     transportServerSslContext = buildSSLServerContext(transportKeystoreKey, transportKeystoreCert,
-                            trustedTransportCertificates, getEnabledSSLCiphers(this.sslTransportServerProvider, false),
-                            this.sslTransportServerProvider, ClientAuth.REQUIRE);
+                        trustedTransportCertificates, getEnabledSSLCiphers(this.sslTransportServerProvider, false),
+                        this.sslTransportServerProvider, ClientAuth.REQUIRE);
                     transportClientSslContext = buildSSLClientContext(transportKeystoreKey, transportKeystoreCert,
-                            trustedTransportCertificates, getEnabledSSLCiphers(sslTransportClientProvider, false),
-                            sslTransportClientProvider);
+                        trustedTransportCertificates, getEnabledSSLCiphers(sslTransportClientProvider, false),
+                        sslTransportClientProvider);
 
                 } catch (final Exception e) {
                     logExplanation(e);
                     throw new ElasticsearchSecurityException(
-                            "Error while initializing transport SSL layer: " + e.toString(), e);
+                        "Error while initializing transport SSL layer: " + e.toString(), e);
                 }
 
-            } else if (rawPemCertFilePath != null) {
+            }
+            else if (rawPemCertFilePath != null) {
+                log.info("bdebjani: ----rawPemCertFilePath is not null for client");
 
                 final String pemCertFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH,
-                        true);
+                    true);
                 final String pemKey = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, true);
                 final String trustedCas = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH,
-                        true);
-
+                    true);
                 try {
 
                     transportServerSslContext = buildSSLServerContext(new File(pemKey), new File(pemCertFilePath),
-                            new File(trustedCas),
-                            settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
-                            getEnabledSSLCiphers(this.sslTransportServerProvider, false),
-                            this.sslTransportServerProvider, ClientAuth.REQUIRE);
+                        new File(trustedCas),
+                        settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
+                        getEnabledSSLCiphers(this.sslTransportServerProvider, false),
+                        this.sslTransportServerProvider, ClientAuth.REQUIRE);
                     transportClientSslContext = buildSSLClientContext(new File(pemKey), new File(pemCertFilePath),
-                            new File(trustedCas),
-                            settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
-                            getEnabledSSLCiphers(sslTransportClientProvider, false), sslTransportClientProvider);
+                        new File(trustedCas),
+                        settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
+                        getEnabledSSLCiphers(sslTransportClientProvider, false), sslTransportClientProvider);
 
                 } catch (final Exception e) {
                     logExplanation(e);
                     throw new ElasticsearchSecurityException(
-                            "Error while initializing transport SSL layer from PEM: " + e.toString(), e);
+                        "Error while initializing transport SSL layer from PEM: " + e.toString(), e);
                 }
 
             } else {
                 throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH + " or "
-                        + SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH
-                        + " must be set if transport ssl is reqested.");
+                    + SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH
+                    + " must be set if transport ssl is reqested.");
             }
         }
 
         final boolean client = !"node".equals(this.settings.get(OpenDistroSecuritySSLPlugin.CLIENT_TYPE));
 
+        // init application level ssl context
         if (!client && httpSSLEnabled) {
-
             final String rawKeystoreFilePath = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_FILEPATH,
-                    null);
+                null);
             final String rawPemCertFilePath = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMCERT_FILEPATH,
-                    null);
+                null);
             final ClientAuth httpClientAuthMode = ClientAuth.valueOf(settings
-                    .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_CLIENTAUTH_MODE, ClientAuth.OPTIONAL.toString()));
+                .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_CLIENTAUTH_MODE, ClientAuth.OPTIONAL.toString()));
 
+            // not used
             if (rawKeystoreFilePath != null) {
 
                 final String keystoreFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_FILEPATH,
-                        true);
+                    true);
+
                 final String keystoreType = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_TYPE,
-                        DEFAULT_STORE_TYPE);
+                    DEFAULT_STORE_TYPE);
+
                 final String keystorePassword = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_PASSWORD,
-                        SSLConfigConstants.DEFAULT_STORE_PASSWORD);
-                
+                    SSLConfigConstants.DEFAULT_STORE_PASSWORD);
+
                 final String keyPassword = settings.get(
-                        SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_KEYPASSWORD,
-                        keystorePassword);
-                
-                
+                    SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_KEYPASSWORD,
+                    keystorePassword);
+
+
                 final String keystoreAlias = settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_ALIAS, null);
 
                 log.info("HTTPS client auth mode {}", httpClientAuthMode);
 
                 if (settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_FILEPATH, null) == null) {
                     throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_FILEPATH
-                            + " must be set if https is reqested.");
+                        + " must be set if https is reqested.");
                 }
 
                 if (httpClientAuthMode == ClientAuth.REQUIRE) {
 
                     if (settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_FILEPATH, null) == null) {
                         throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_FILEPATH
-                                + " must be set if http ssl and client auth is reqested.");
+                            + " must be set if http ssl and client auth is reqested.");
                     }
 
                 }
@@ -406,18 +497,18 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                     final KeyStore ks = KeyStore.getInstance(keystoreType);
                     try (FileInputStream fin = new FileInputStream(new File(keystoreFilePath))) {
                         ks.load(fin, (keystorePassword == null || keystorePassword.length() == 0) ? null
-                                : keystorePassword.toCharArray());
+                            : keystorePassword.toCharArray());
                     }
 
                     final X509Certificate[] httpKeystoreCert = SSLCertificateHelper.exportServerCertChain(ks,
-                            keystoreAlias);
+                        keystoreAlias);
                     final PrivateKey httpKeystoreKey = SSLCertificateHelper.exportDecryptedKey(ks, keystoreAlias,
-                            (keyPassword == null || keyPassword.length() == 0) ? null
-                                    : keyPassword.toCharArray());
+                        (keyPassword == null || keyPassword.length() == 0) ? null
+                            : keyPassword.toCharArray());
 
                     if (httpKeystoreKey == null) {
                         throw new ElasticsearchException(
-                                "No key found in " + keystoreFilePath + " with alias " + keystoreAlias);
+                            "No key found in " + keystoreFilePath + " with alias " + keystoreAlias);
                     }
 
                     if (httpKeystoreCert != null && httpKeystoreCert.length > 0) {
@@ -426,14 +517,14 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                         /*
                          * for (int i = 0; i < httpKeystoreCert.length; i++) { X509Certificate
                          * x509Certificate = httpKeystoreCert[i];
-                         * 
+                         *
                          * if(x509Certificate != null) {
                          * log.info("HTTP keystore subject DN no. {} {}",i,x509Certificate.
                          * getSubjectX500Principal()); } }
                          */
                     } else {
                         throw new ElasticsearchException(
-                                "No certificates found in " + keystoreFilePath + " with alias " + keystoreAlias);
+                            "No certificates found in " + keystoreFilePath + " with alias " + keystoreAlias);
                     }
 
                     X509Certificate[] trustedHTTPCertificates = null;
@@ -441,37 +532,38 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                     if (settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_FILEPATH, null) != null) {
 
                         final String truststoreFilePath = resolve(
-                                SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_FILEPATH, true);
+                            SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_FILEPATH, true);
 
                         final String truststoreType = settings
-                                .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_TYPE, DEFAULT_STORE_TYPE);
+                            .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_TYPE, DEFAULT_STORE_TYPE);
                         final String truststorePassword = settings.get(
-                                SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_PASSWORD,
-                                SSLConfigConstants.DEFAULT_STORE_PASSWORD);
+                            SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_PASSWORD,
+                            SSLConfigConstants.DEFAULT_STORE_PASSWORD);
                         final String truststoreAlias = settings
-                                .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_ALIAS, null);
+                            .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_TRUSTSTORE_ALIAS, null);
 
                         final KeyStore ts = KeyStore.getInstance(truststoreType);
                         try (FileInputStream fin = new FileInputStream(new File(truststoreFilePath))) {
                             ts.load(fin, (truststorePassword == null || truststorePassword.length() == 0) ? null
-                                    : truststorePassword.toCharArray());
+                                : truststorePassword.toCharArray());
                         }
                         trustedHTTPCertificates = SSLCertificateHelper.exportRootCertificates(ts, truststoreAlias);
                     }
 
                     httpSslContext = buildSSLServerContext(httpKeystoreKey, httpKeystoreCert, trustedHTTPCertificates,
-                            getEnabledSSLCiphers(this.sslHTTPProvider, true), sslHTTPProvider, httpClientAuthMode);
+                        getEnabledSSLCiphers(this.sslHTTPProvider, true), sslHTTPProvider, httpClientAuthMode);
 
                 } catch (final Exception e) {
                     logExplanation(e);
                     throw new ElasticsearchSecurityException("Error while initializing HTTP SSL layer: " + e.toString(),
-                            e);
+                        e);
                 }
 
-            } else if (rawPemCertFilePath != null) {
-
+            }
+            else if (rawPemCertFilePath != null) {
+                log.info("bdebjani: rawPemCertFilePath != null for server");
                 final String trustedCas = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH,
-                        false);
+                    false);
 
                 if (httpClientAuthMode == ClientAuth.REQUIRE) {
 
@@ -491,45 +583,53 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
                 try {
                     httpSslContext = buildSSLServerContext(new File(pemKey), new File(pemCertFilePath),
-                            trustedCas == null ? null : new File(trustedCas),
-                            settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_PASSWORD),
-                            getEnabledSSLCiphers(this.sslHTTPProvider, true), sslHTTPProvider, httpClientAuthMode);
+                        trustedCas == null ? null : new File(trustedCas),
+                        settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_PASSWORD),
+                        getEnabledSSLCiphers(this.sslHTTPProvider, true), sslHTTPProvider, httpClientAuthMode);
                 } catch (final Exception e) {
                     logExplanation(e);
                     throw new ElasticsearchSecurityException(
-                            "Error while initializing http SSL layer from PEM: " + e.toString(), e);
+                        "Error while initializing http SSL layer from PEM: " + e.toString(), e);
                 }
 
             } else {
                 throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_KEYSTORE_FILEPATH + " or "
-                        + SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH
-                        + " must be set if http ssl is reqested.");
+                    + SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH
+                    + " must be set if http ssl is reqested.");
             }
 
         }
     }
 
-    public SSLEngine createHTTPSSLEngine() throws SSLException {
+    private void printJCEWarnings() {
+        try {
+            final int aesMaxKeyLength = Cipher.getMaxAllowedKeyLength("AES");
 
+            if (aesMaxKeyLength < 256) {
+                log.info("AES-256 not supported, max key length for AES is " + aesMaxKeyLength + " bit."
+                    + " (This is not an issue, it just limits possible encryption strength. To enable AES 256, install 'Java Cryptography Extension (JCE) Unlimited Strength Jurisdiction Policy Files')");
+            }
+        } catch (final NoSuchAlgorithmException e) {
+            log.error("AES encryption not supported (SG 1). " + e);
+        }
+    }
+
+    public SSLEngine createHTTPSSLEngine() throws SSLException {
         final SSLEngine engine = httpSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
         engine.setEnabledProtocols(getEnabledSSLProtocols(this.sslHTTPProvider, true));
         return engine;
-
     }
 
     public SSLEngine createServerTransportSSLEngine() throws SSLException {
-
-        final SSLEngine engine = transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
-        engine.setEnabledProtocols(getEnabledSSLProtocols(this.sslTransportServerProvider, false));
-        return engine;
-
+        SSLEngine serverTransportSSLEngine = transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
+        serverTransportSSLEngine.setEnabledProtocols(getEnabledSSLProtocols(this.sslTransportServerProvider, false));
+        return serverTransportSSLEngine;
     }
 
     public SSLEngine createClientTransportSSLEngine(final String peerHost, final int peerPort) throws SSLException {
-
         if (peerHost != null) {
             final SSLEngine engine = transportClientSslContext.newEngine(PooledByteBufAllocator.DEFAULT, peerHost,
-                    peerPort);
+                peerPort);
 
             final SSLParameters sslParams = new SSLParameters();
             sslParams.setEndpointIdentificationAlgorithm("HTTPS");
@@ -542,6 +642,60 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
             return engine;
         }
 
+    }
+
+    // My method
+    @Override
+    public void updateCerts() {
+        log.info("calling update certs");
+        final String pemCertFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH,
+            true);
+        final String pemKey = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, true);
+        final String trustedCas = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH,
+            true);
+        log.info("bdebjani: pem Cert file path (for transport) is "+ pemCertFilePath);
+        log.info("bdebjani: pem Key file path (for transport) is "+ pemKey);
+        log.info("bdebjani: CA file path (for transport) is "+ trustedCas);
+        try {
+
+            transportServerSslContext = buildSSLServerContext(new File(pemKey), new File(pemCertFilePath),
+                new File(trustedCas),
+                settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
+                getEnabledSSLCiphers(this.sslTransportServerProvider, false),
+                this.sslTransportServerProvider, ClientAuth.REQUIRE);
+            transportClientSslContext = buildSSLClientContext(new File(pemKey), new File(pemCertFilePath),
+                new File(trustedCas),
+                settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_PASSWORD),
+                getEnabledSSLCiphers(sslTransportClientProvider, false), sslTransportClientProvider);
+
+        } catch (final Exception e) {
+            logExplanation(e);
+            throw new ElasticsearchSecurityException(
+                "Error while initializing transport SSL layer from PEM: " + e.toString(), e);
+        }
+
+    }
+
+    private String resolve(String propName, boolean mustBeValid) {
+
+        final String originalPath = settings.get(propName, null);
+        String path = originalPath;
+        log.info("Value for {} is {}", propName, originalPath);
+
+        if (env != null && originalPath != null && originalPath.length() > 0) {
+            path = env.configFile().resolve(originalPath).toAbsolutePath().toString();
+            log.info("Resolved {} to {} against {}", originalPath, path, env.configFile().toAbsolutePath().toString());
+        }
+
+        if (mustBeValid) {
+            checkPath(path, propName);
+        }
+
+        if ("".equals(path)) {
+            path = null;
+        }
+
+        return path;
     }
 
     @Override
@@ -574,7 +728,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                         + " does not support hostname verification. You should update to 1.0.2k or later.");
             }
 
-            log.debug("OpenSSL available ciphers " + OpenSsl.availableOpenSslCipherSuites());
+            log.info("OpenSSL available ciphers " + OpenSsl.availableOpenSslCipherSuites());
         } else {
             log.info("OpenSSL not available (this is not an error, we simply fallback to built-in JDK SSL) because of "
                     + OpenSsl.unavailabilityCause());
@@ -594,7 +748,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
 
     }
-    
+
     private String[] getEnabledSSLProtocols(final SslProvider provider, boolean http) {
         if (provider == null) {
             return new String[0];
@@ -608,116 +762,9 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
 
     }
-
-    private void initEnabledSSLCiphers() {
-
-        final List<String> secureHttpSSLCiphers = SSLConfigConstants.getSecureSSLCiphers(settings, true);
-        final List<String> secureTransportSSLCiphers = SSLConfigConstants.getSecureSSLCiphers(settings, false);
-        final List<String> secureHttpSSLProtocols = Arrays.asList(SSLConfigConstants.getSecureSSLProtocols(settings, true));
-        final List<String> secureTransportSSLProtocols = Arrays.asList(SSLConfigConstants.getSecureSSLProtocols(settings, false));
-
-        if (OpenSsl.isAvailable()) {
-            final Set<String> openSSLSecureHttpCiphers = new HashSet<>();
-            for (final String secure : secureHttpSSLCiphers) {
-                if (OpenSsl.isCipherSuiteAvailable(secure)) {
-                    openSSLSecureHttpCiphers.add(secure);
-                }
-            }
-            
-            
-            log.debug("OPENSSL "+OpenSsl.versionString()+" supports the following ciphers (java-style) {}", OpenSsl.availableJavaCipherSuites());
-            log.debug("OPENSSL "+OpenSsl.versionString()+" supports the following ciphers (openssl-style) {}", OpenSsl.availableOpenSslCipherSuites());
-
-            enabledHttpCiphersOpenSSLProvider = Collections
-                    .unmodifiableList(new ArrayList<String>(openSSLSecureHttpCiphers));
-        } else {
-            enabledHttpCiphersOpenSSLProvider = Collections.emptyList();
-        }
-
-        if (OpenSsl.isAvailable()) {
-            final Set<String> openSSLSecureTransportCiphers = new HashSet<>();
-            for (final String secure : secureTransportSSLCiphers) {
-                if (OpenSsl.isCipherSuiteAvailable(secure)) {
-                    openSSLSecureTransportCiphers.add(secure);
-                }
-            }
-
-            enabledTransportCiphersOpenSSLProvider = Collections
-                    .unmodifiableList(new ArrayList<String>(openSSLSecureTransportCiphers));
-        } else {
-            enabledTransportCiphersOpenSSLProvider = Collections.emptyList();
-        }
-        
-        if(OpenSsl.isAvailable() && OpenSsl.version() > 0x10101009L) {
-            enabledHttpProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.3","TLSv1.2","TLSv1.1","TLSv1"));
-            enabledHttpProtocolsOpenSSLProvider.retainAll(secureHttpSSLProtocols);
-            enabledTransportProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.3","TLSv1.2","TLSv1.1"));
-            enabledTransportProtocolsOpenSSLProvider.retainAll(secureTransportSSLProtocols);
-            
-            log.info("OpenSSL supports TLSv1.3");
-            
-        } else if(OpenSsl.isAvailable()){
-            enabledHttpProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.2","TLSv1.1","TLSv1"));
-            enabledHttpProtocolsOpenSSLProvider.retainAll(secureHttpSSLProtocols);
-            enabledTransportProtocolsOpenSSLProvider = new ArrayList(Arrays.asList("TLSv1.2","TLSv1.1"));
-            enabledTransportProtocolsOpenSSLProvider.retainAll(secureTransportSSLProtocols);
-        } else {
-            enabledHttpProtocolsOpenSSLProvider = Collections.emptyList();
-            enabledTransportProtocolsOpenSSLProvider = Collections.emptyList();
-        }
-
-        SSLEngine engine = null;
-        List<String> jdkSupportedCiphers = null;
-        List<String> jdkSupportedProtocols = null;
-        try {
-            final SSLContext serverContext = SSLContext.getInstance("TLS");
-            serverContext.init(null, null, null);
-            engine = serverContext.createSSLEngine();
-            jdkSupportedCiphers = Arrays.asList(engine.getEnabledCipherSuites());
-            jdkSupportedProtocols = Arrays.asList(engine.getEnabledProtocols());
-            log.debug("JVM supports the following {} protocols {}", jdkSupportedProtocols.size(),
-                    jdkSupportedProtocols);
-            log.debug("JVM supports the following {} ciphers {}", jdkSupportedCiphers.size(),
-                    jdkSupportedCiphers);
-            
-            if(jdkSupportedProtocols.contains("TLSv1.3")) {
-                log.info("JVM supports TLSv1.3");
-            }
-            
-        } catch (final Throwable e) {
-            log.error("Unable to determine supported ciphers due to " + e, e);
-        } finally {
-            if (engine != null) {
-                try {
-                    engine.closeInbound();
-                } catch (SSLException e) {
-                    log.debug("Unable to close inbound ssl engine", e);
-                }
-                engine.closeOutbound();
-            }
-        }
-
-        if(jdkSupportedCiphers == null || jdkSupportedCiphers.isEmpty() || jdkSupportedProtocols == null || jdkSupportedProtocols.isEmpty()) {
-            throw new ElasticsearchException("Unable to determine supported ciphers or protocols");
-        }
-        
-        enabledHttpCiphersJDKProvider = new ArrayList<String>(jdkSupportedCiphers);
-        enabledHttpCiphersJDKProvider.retainAll(secureHttpSSLCiphers);
-        
-        enabledTransportCiphersJDKProvider = new ArrayList<String>(jdkSupportedCiphers);
-        enabledTransportCiphersJDKProvider.retainAll(secureTransportSSLCiphers);
-        
-        enabledHttpProtocolsJDKProvider = new ArrayList<String>(jdkSupportedProtocols);
-        enabledHttpProtocolsJDKProvider.retainAll(secureHttpSSLProtocols);
-        
-        enabledTransportProtocolsJDKProvider = new ArrayList<String>(jdkSupportedProtocols);
-        enabledTransportProtocolsJDKProvider.retainAll(secureTransportSSLProtocols);
-    }
-
     private SslContext buildSSLServerContext(final PrivateKey _key, final X509Certificate[] _cert,
             final X509Certificate[] _trustedCerts, final Iterable<String> ciphers, final SslProvider sslProvider,
             final ClientAuth authMode) throws SSLException {
-
         final SslContextBuilder _sslContextBuilder = SslContextBuilder.forServer(_key, _cert).ciphers(ciphers)
                 .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED)
                 .clientAuth(Objects.requireNonNull(authMode)) // https://github.com/netty/netty/issues/4722
@@ -734,22 +781,36 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
             final String pwd, final Iterable<String> ciphers, final SslProvider sslProvider, final ClientAuth authMode)
             throws SSLException {
 
-        final SslContextBuilder _sslContextBuilder = SslContextBuilder.forServer(_cert, _key, pwd).ciphers(ciphers)
+        log.info("bdebjani: Build SSL Server Context WITH keystore");
+        try {
+            final KeyStore serverKeyStore = getKeyStore(_key, _cert, _trustedCerts, pwd);
+            serverKMF = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            serverKMF.init(serverKeyStore, pwd.toCharArray());
+
+            log.info("SETTING UP SSLCONTEXTBUILDER");
+            final SslContextBuilder _sslContextBuilder = SslContextBuilder.forServer(serverKMF).ciphers(ciphers)
                 .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED)
                 .clientAuth(Objects.requireNonNull(authMode)) // https://github.com/netty/netty/issues/4722
                 .sessionCacheSize(0).sessionTimeout(0).sslProvider(sslProvider);
 
-        if (_trustedCerts != null) {
-            _sslContextBuilder.trustManager(_trustedCerts);
-        }
+            if (_trustedCerts != null) {
+                log.info("ADDING SSLCONTEXTBUILDER");
+                _sslContextBuilder.trustManager(_trustedCerts);
+            }
 
-        return buildSSLContext0(_sslContextBuilder);
+            log.info("SERVER KMF INITIALIZED");
+            return buildSSLContext0(_sslContextBuilder);
+        } catch(Exception e) {
+            log.info("Error occured in server!! Abort - {}", e.getStackTrace());
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private SslContext buildSSLClientContext(final PrivateKey _key, final X509Certificate[] _cert,
             final X509Certificate[] _trustedCerts, final Iterable<String> ciphers, final SslProvider sslProvider)
             throws SSLException {
-
+        log.info("bdebjani: building Client Context w/o Keystore");
         final SslContextBuilder _sslClientContextBuilder = SslContextBuilder.forClient().ciphers(ciphers)
                 .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED).sessionCacheSize(0).sessionTimeout(0)
                 .sslProvider(sslProvider).trustManager(_trustedCerts).keyManager(_key, _cert);
@@ -760,13 +821,24 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
     private SslContext buildSSLClientContext(final File _key, final File _cert, final File _trustedCerts,
             final String pwd, final Iterable<String> ciphers, final SslProvider sslProvider) throws SSLException {
+        log.info("bdebjani: building Client Context with Keystore");
+        try {
+            KeyStore clientKeyStore = getKeyStore(_key, _cert, _trustedCerts, pwd);
+            clientKMF = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            clientKMF.init(clientKeyStore, null);
 
-        final SslContextBuilder _sslClientContextBuilder = SslContextBuilder.forClient().ciphers(ciphers)
+            log.info("SETTING UP CLIENT SSLCONTEXTBUILDER");
+            final SslContextBuilder _sslClientContextBuilder = SslContextBuilder.forClient().ciphers(ciphers)
                 .applicationProtocolConfig(ApplicationProtocolConfig.DISABLED).sessionCacheSize(0).sessionTimeout(0)
-                .sslProvider(sslProvider).trustManager(_trustedCerts).keyManager(_cert, _key, pwd);
+                .sslProvider(sslProvider).trustManager(_trustedCerts).keyManager(clientKMF);
 
-        return buildSSLContext0(_sslClientContextBuilder);
-
+            log.info("Client KMF initialized");
+            return buildSSLContext0(_sslClientContextBuilder);
+        } catch (Exception e) {
+            log.info("Error occured!! Abort - {}", e.getStackTrace());
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private SslContext buildSSLContext0(final SslContextBuilder sslContextBuilder) throws SSLException {
@@ -790,6 +862,55 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
 
         return sslContext;
+    }
+
+    private KeyStore getKeyStore(File _key, File _cert, File _trustedCerts, String pwd) throws InvalidKeySpecException, NoSuchAlgorithmException, IOException, KeyStoreException, CertificateException {
+        log.info("getKeyStore");
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null);
+
+        //X509Certificate x509Cert = createX509CertificateFromFile(_cert);
+        //keyStore.setCertificateEntry("ca-certificate", x509Cert);
+
+        X509Certificate[] certificatesArray = new X509Certificate[1];
+        certificatesArray[0] = createX509CertificateFromFile(_cert);
+
+        // Loads a private key from the specified key file name
+
+        final FileReader fr = new FileReader(_key);
+        final PemReader pemReader = new PemReader(fr);
+
+        try {
+            final PemObject pemObject = pemReader.readPemObject();
+            keyStore.setKeyEntry("ca-certificate", pemObject.getContent(), certificatesArray);
+            keyStore.setCertificateEntry("ca-trusted", createX509CertificateFromFile(_trustedCerts));
+        } catch(Exception e) {
+            log.info(e.getMessage());
+            log.info(e.getStackTrace());
+        }
+        finally {
+            fr.close();
+            pemReader.close();
+        }
+
+        log.info("getKeyStore done");
+        return keyStore;
+    }
+
+    private X509Certificate createX509CertificateFromFile(
+        final File file) throws IOException, CertificateException
+    {
+        log.info("createX509CertificateFromFile");
+        if (!file.isFile()) {
+            throw new IOException(
+                String.format("The certificate file %s doesn't exist.", file));
+        }
+        final CertificateFactory certificateFactoryX509 = CertificateFactory.getInstance("X.509");
+        final InputStream inputStream = new FileInputStream(file);
+        final X509Certificate certificate = (X509Certificate) certificateFactoryX509.generateCertificate(inputStream);
+        inputStream.close();
+        log.info("createX509CertificateFromFile done");
+        return certificate;
     }
 
     private void logExplanation(Exception e) {
