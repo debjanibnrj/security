@@ -17,6 +17,7 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.rest.UpdateSearchGuardCertificatesAction;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.util.internal.PlatformDependent;
 
@@ -220,11 +221,13 @@ public class OpenDistroSecuritySSLPlugin extends Plugin implements ActionPlugin,
     public List<RestHandler> getRestHandlers(Settings settings, RestController restController, ClusterSettings clusterSettings,
             IndexScopedSettings indexScopedSettings, SettingsFilter settingsFilter,
             IndexNameExpressionResolver indexNameExpressionResolver, Supplier<DiscoveryNodes> nodesInCluster) {
-        
+
+        log.debug("Hit Rest Handler");
         final List<RestHandler> handlers = new ArrayList<RestHandler>(1);
         
         if (!client) {
             handlers.add(new OpenDistroSecuritySSLInfoAction(settings, configPath, restController, odsks, Objects.requireNonNull(principalExtractor)));
+            handlers.add(new UpdateSearchGuardCertificatesAction(settings, configPath, restController, odsks, Objects.requireNonNull(principalExtractor)));
         }
         
         return handlers;
@@ -237,7 +240,7 @@ public class OpenDistroSecuritySSLPlugin extends Plugin implements ActionPlugin,
         List<TransportInterceptor> interceptors = new ArrayList<TransportInterceptor>(1);
         
         if(transportSSLEnabled && !client) {
-            interceptors.add(new OpenDistroSecuritySSLTransportInterceptor(settings, null, null, NOOP_SSL_EXCEPTION_HANDLER));
+            interceptors.add(new OpenDistroSecuritySSLTransportInterceptor(settings, null, null, NOOP_SSL_EXCEPTION_HANDLER, odsks, configPath));
         }
         
         return interceptors;

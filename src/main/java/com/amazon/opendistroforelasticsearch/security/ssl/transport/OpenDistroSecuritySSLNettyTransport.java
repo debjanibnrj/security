@@ -69,7 +69,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
 
     @Override
     public void onException(TcpChannel channel, Exception e) {
-
+        logger.debug("OpenDistroSecuritySSLNettyTransport exception");
         if (lifecycle.started()) {
             
             Throwable cause = e;
@@ -195,6 +195,11 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
 
         @Override
         public void connect(ChannelHandlerContext ctx, SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) throws Exception {
+            if(remoteAddress != null)
+                log.debug("ClientSSLHandler connection request remote {}", remoteAddress.toString());
+            if(localAddress != null)
+                log.debug("ClientSSLHandler connection request local {}",  localAddress.toString());
+
             SSLEngine engine = null;
             try {
                 if (hostnameVerificationEnabled) {
@@ -211,8 +216,11 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
                     }
                     
                     engine = odsks.createClientTransportSSLEngine(hostname, inetSocketAddress.getPort());
+                    log.debug("ClientSSLHandler log " + hostname + " " + inetSocketAddress.getPort());
+
                 } else {
                     engine = odsks.createClientTransportSSLEngine(null, -1);
+                    log.debug("ClientSSLHandler log with null and -1");
                 }
             } catch (final SSLException e) {
                 throw ExceptionsHelper.convertToElastic(e);
@@ -243,6 +251,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         
         @Override
         public final void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+            logger.debug("SSLClientChannelInitializer Exception");
             if(OpenDistroSecuritySSLNettyTransport.this.lifecycle.started()) {
                 
                 if(cause instanceof DecoderException && cause != null) {

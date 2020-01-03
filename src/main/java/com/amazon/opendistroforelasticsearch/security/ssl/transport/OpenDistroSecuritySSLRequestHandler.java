@@ -17,16 +17,22 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl.transport;
 
+import java.nio.file.Path;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLPeerUnverifiedException;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyStore;
+import com.amazon.opendistroforelasticsearch.security.ssl.util.ChannelAnalyzer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -53,15 +59,19 @@ implements TransportRequestHandler<T> {
     protected final Logger log = LogManager.getLogger(this.getClass());
     private final PrincipalExtractor principalExtractor;
     private final SslExceptionHandler errorHandler;
+    private final ChannelAnalyzer channelAnalyzer;
 
-    public OpenDistroSecuritySSLRequestHandler(String action, TransportRequestHandler<T> actualHandler, 
-            ThreadPool threadPool, final PrincipalExtractor principalExtractor, final SslExceptionHandler errorHandler) {
+    public OpenDistroSecuritySSLRequestHandler(String action, TransportRequestHandler<T> actualHandler,
+                                               ThreadPool threadPool, final PrincipalExtractor principalExtractor,
+                                               final SslExceptionHandler errorHandler) {
         super();
         this.action = action;
         this.actualHandler = actualHandler;
         this.threadPool = threadPool;
         this.principalExtractor = principalExtractor;
         this.errorHandler = errorHandler;
+        this.channelAnalyzer = ChannelAnalyzer.getChannelAnalyzerInstance();
+        log.debug("Action is Constructor " + action );
     }
     
     protected ThreadContext getThreadContext() {
@@ -74,6 +84,7 @@ implements TransportRequestHandler<T> {
 
     @Override
     public final void messageReceived(T request, TransportChannel channel, Task task) throws Exception {
+        log.debug("Action is MR " + action );
         ThreadContext threadContext = getThreadContext() ;
       
         if(SSLRequestHelper.containsBadHeader(threadContext, "_opendistro_security_ssl_")) {
@@ -101,8 +112,30 @@ implements TransportRequestHandler<T> {
             } else {
                 throw new Exception("Invalid channel of type "+channel.getClass()+ " ("+channel.getChannelType()+")");
             }
-            
+            // Netty Channel
+            String nettyChannelString = nettyChannel.getNettyChannel().id().toString();
+            log.debug("Channel ID is {}",  nettyChannelString);
+
+            // Add to the concurrent map
+            channelAnalyzer.addToList(nettyChannelString, nettyChannel);
+            log.debug("Action is {}",  action );
+            log.debug("Channel ID Active {}",  nettyChannel.getNettyChannel().isActive());
+            log.debug("Channel Config {}",  nettyChannel.getNettyChannel().config().toString());
+            log.debug("Channel isRegistered ? {}",  nettyChannel.getNettyChannel().isWritable());
+            log.debug("Channel isOpen? {}",  nettyChannel.getNettyChannel().isOpen());
+
+            List<String> names = nettyChannel.getNettyChannel().pipeline().names();
+            names.forEach(x -> log.debug("Handler name {}",  x));
             final SslHandler sslhandler = (SslHandler) nettyChannel.getNettyChannel().pipeline().get("ssl_server");
+
+            /*SslHandler newSslhandler = UpdateSSLEngine();
+            if(newEngineNeeded(sslhandler, newSslhandler)) {
+                log.debug("Updating SSL Handler for channel ID "  nettyChannel.getLowLevelChannel().id().toString());
+                nettyChannel.getLowLevelChannel().pipeline().replace(sslhandler,"ssl_server", newSslhandler);
+                messageReceivedDecorate(request, actualHandler, channel, task);
+                return;
+            }*/
+
 
             if (sslhandler == null) {
                 final String msg = "No ssl handler found (SG 11)";
@@ -115,7 +148,10 @@ implements TransportRequestHandler<T> {
 
             final Certificate[] peerCerts = sslhandler.engine().getSession().getPeerCertificates();
             final Certificate[] localCerts = sslhandler.engine().getSession().getLocalCertificates();
-            
+
+            log.debug("PeerCertsNew.length is {}",  peerCerts.length);
+            log.debug("localCerts.length is {}",  localCerts.length);
+
             if (peerCerts != null 
                     && peerCerts.length > 0 
                     && peerCerts[0] instanceof X509Certificate 
@@ -124,6 +160,13 @@ implements TransportRequestHandler<T> {
                 final X509Certificate[] x509PeerCerts = Arrays.copyOf(peerCerts, peerCerts.length, X509Certificate[].class);
                 final X509Certificate[] x509LocalCerts = Arrays.copyOf(localCerts, localCerts.length, X509Certificate[].class);
                 final String principal = principalExtractor==null?null:principalExtractor.extractPrincipal(x509PeerCerts[0], PrincipalExtractor.Type.TRANSPORT);
+
+                String peerCertsString = Arrays.stream(x509PeerCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()).toString();
+                String localCertsString = Arrays.stream(x509LocalCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()).toString();
+                log.debug("Peer certs DN {}",  peerCertsString);
+                log.debug("Local certs DN {}",  localCertsString);
+                log.debug("principal {}",  principal);
+
                 addAdditionalContextValues(action, request, x509LocalCerts, x509PeerCerts, principal);
                 if(threadContext != null) {
                     //in the case of ssl plugin only: threadContext and principalExtractor are null

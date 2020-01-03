@@ -100,12 +100,13 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
     private List<String> enabledTransportProtocolsOpenSSLProvider;
     
     private SslContext httpSslContext;
-    private SslContext transportServerSslContext;
+    public SslContext transportServerSslContext;
     private SslContext transportClientSslContext;
     private final Environment env;
 
     public DefaultOpenDistroSecurityKeyStore(final Settings settings, final Path configPath) {
         super();
+        log.debug(configPath.toString());
         this.settings = settings;
         Environment _env;
         try {
@@ -148,6 +149,8 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
 
         initEnabledSSLCiphers();
+        //ScheduledExecutorService executorService = Executors.newScheduledThreadPool(5);
+        //executorService.scheduleAtFixedRate(() -> {initSSLConfig(); log.debug("Initialized New SSL Config");},0,120, TimeUnit.SECONDS);
         initSSLConfig();
         printJCEWarnings();
 
@@ -195,6 +198,12 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
         }
     }
 
+    public void UpdateCertificates() {
+        log.debug("Calling Update Certificates API");
+        initSSLConfig();
+        return;
+    }
+
     private String resolve(String propName, boolean mustBeValid) {
 
         final String originalPath = settings.get(propName, null);
@@ -228,12 +237,15 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
         if (transportSSLEnabled) {
 
+            log.info("****** SSL Enabled ");
+
             final String rawKeyStoreFilePath = settings
                     .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH, null);
             final String rawPemCertFilePath = settings
                     .get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, null);
 
             if (rawKeyStoreFilePath != null) {
+                log.info("---- rawKeyStoreFilePath set");
 
                 final String keystoreFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_FILEPATH,
                         true);
@@ -253,6 +265,8 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                 final String truststoreFilePath = resolve(
                         SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH, true);
 
+                log.info("---- get Truststore file path");
+
                 if (settings.get(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH, null) == null) {
                     throw new ElasticsearchException(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH
                             + " must be set if transport ssl is requested.");
@@ -268,6 +282,8 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
                 try {
 
+                    log.info("---- about to get keystore instances --- ");
+
                     final KeyStore ks = KeyStore.getInstance(keystoreType);
                     ks.load(new FileInputStream(new File(keystoreFilePath)),
                             (keystorePassword == null || keystorePassword.length() == 0) ? null
@@ -275,14 +291,19 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
                     final X509Certificate[] transportKeystoreCert = SSLCertificateHelper.exportServerCertChain(ks,
                             keystoreAlias);
+                    log.info("---- exporting server chain --- ");
                     final PrivateKey transportKeystoreKey = SSLCertificateHelper.exportDecryptedKey(ks, keystoreAlias,
                             (keyPassword == null || keyPassword.length() == 0) ? null
                                     : keyPassword.toCharArray());
+
+                    log.info("transportKeystoreKey is " + transportKeystoreKey);
 
                     if (transportKeystoreKey == null) {
                         throw new ElasticsearchException(
                                 "No key found in " + keystoreFilePath + " with alias " + keystoreAlias);
                     }
+
+                    log.info("transportKeystoreCert.length is " + transportKeystoreCert.length );
 
                     if (transportKeystoreCert != null && transportKeystoreCert.length > 0) {
 
@@ -311,6 +332,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                     if (trustedTransportCertificates == null) {
                         throw new ElasticsearchException("No truststore configured for server");
                     }
+                    log.info("trustedTransportCertificates.length is " + trustedTransportCertificates.length);
 
                     transportServerSslContext = buildSSLServerContext(transportKeystoreKey, transportKeystoreCert,
                             trustedTransportCertificates, getEnabledSSLCiphers(this.sslTransportServerProvider, false),
@@ -327,12 +349,13 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
             } else if (rawPemCertFilePath != null) {
 
+                log.info("----rawPemCertFilePath is not null ");
+
                 final String pemCertFilePath = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH,
                         true);
                 final String pemKey = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, true);
                 final String trustedCas = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH,
                         true);
-
                 try {
 
                     transportServerSslContext = buildSSLServerContext(new File(pemKey), new File(pemCertFilePath),
@@ -469,7 +492,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
                 }
 
             } else if (rawPemCertFilePath != null) {
-
+                log.info("----rawPemCertFilePath2 is not null ");
                 final String trustedCas = resolve(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH,
                         false);
 
@@ -518,7 +541,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
     }
 
     public SSLEngine createServerTransportSSLEngine() throws SSLException {
-
+        log.info("Creating new server transport SSL Engine");
         final SSLEngine engine = transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
         engine.setEnabledProtocols(getEnabledSSLProtocols(this.sslTransportServerProvider, false));
         return engine;

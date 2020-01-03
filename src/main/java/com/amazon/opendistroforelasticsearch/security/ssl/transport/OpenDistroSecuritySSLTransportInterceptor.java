@@ -17,6 +17,7 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl.transport;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyStore;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.common.settings.Settings;
@@ -27,18 +28,27 @@ import org.elasticsearch.transport.TransportRequestHandler;
 
 import com.amazon.opendistroforelasticsearch.security.ssl.SslExceptionHandler;
 
+import java.nio.file.Path;
+
 public final class OpenDistroSecuritySSLTransportInterceptor implements TransportInterceptor {
     
     protected final Logger log = LogManager.getLogger(this.getClass());
     protected final ThreadPool threadPool;
     protected final PrincipalExtractor principalExtractor;
     protected final SslExceptionHandler errorHandler;
+    public Settings settings;
+    public OpenDistroSecurityKeyStore odsks;
+    public Path configPath;
     
-    public OpenDistroSecuritySSLTransportInterceptor(final Settings settings, final  ThreadPool threadPool, 
-            PrincipalExtractor principalExtractor, final SslExceptionHandler errorHandler) {
+    public OpenDistroSecuritySSLTransportInterceptor(final Settings settings, final ThreadPool threadPool,
+                                                     PrincipalExtractor principalExtractor,  final SslExceptionHandler errorHandler, OpenDistroSecurityKeyStore odsks,
+                                                     final Path configPath) {
         this.threadPool = threadPool;
         this.principalExtractor = principalExtractor;
         this.errorHandler = errorHandler;
+        this.settings = settings;
+        this.odsks = odsks;
+        this.configPath = configPath;
     }
 
     @Override

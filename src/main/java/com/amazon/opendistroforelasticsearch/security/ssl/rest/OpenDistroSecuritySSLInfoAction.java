@@ -18,10 +18,15 @@
 package com.amazon.opendistroforelasticsearch.security.ssl.rest;
 
 import static org.elasticsearch.rest.RestRequest.Method.GET;
+
+import com.amazon.opendistroforelasticsearch.security.ssl.DefaultOpenDistroSecurityKeyStore;
+import com.amazon.opendistroforelasticsearch.security.ssl.util.ChannelAnalyzer;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.handler.ssl.OpenSsl;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.stream.Collectors;
@@ -43,6 +48,8 @@ import com.amazon.opendistroforelasticsearch.security.ssl.transport.PrincipalExt
 import com.amazon.opendistroforelasticsearch.security.ssl.util.SSLRequestHelper;
 import com.amazon.opendistroforelasticsearch.security.ssl.util.SSLRequestHelper.SSLInfo;
 
+import javax.net.ssl.SSLEngine;
+
 public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
 
     private final Logger log = LogManager.getLogger(this.getClass());
@@ -50,6 +57,7 @@ public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
     final PrincipalExtractor principalExtractor;
     private final Path configPath;
     private final Settings settings;
+    public ChannelAnalyzer channelAnalyzer;
 
     public OpenDistroSecuritySSLInfoAction(final Settings settings, final Path configPath, final RestController controller,
             final OpenDistroSecurityKeyStore odsks, final PrincipalExtractor principalExtractor) {
@@ -58,6 +66,7 @@ public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
         this.odsks = odsks;
         this.principalExtractor = principalExtractor;
         this.configPath = configPath;
+        this.channelAnalyzer = ChannelAnalyzer.getChannelAnalyzerInstance();
         controller.registerHandler(GET, "/_opendistro/_security/sslinfo", this);
     }
     
@@ -69,23 +78,36 @@ public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
 
             @Override
             public void accept(RestChannel channel) throws Exception {
+                DefaultOpenDistroSecurityKeyStore dodsks = (DefaultOpenDistroSecurityKeyStore) odsks;
+                SSLEngine engine = dodsks.transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
+                Certificate[] localCertsFromEngine = engine.getSession().getLocalCertificates();
+
                 XContentBuilder builder = channel.newBuilder();
                 BytesRestResponse response = null;
-
                 try {
-                    
+                    log.debug("Channel Analyzer has " + channelAnalyzer.getElements() + " total elements");
+                    log.debug("Channel Analyzer has " + channelAnalyzer.getActiveElements() + " active elements");
+
                     SSLInfo sslInfo = SSLRequestHelper.getSSLInfo(settings, configPath, request, principalExtractor);
                     X509Certificate[] certs = sslInfo == null?null:sslInfo.getX509Certs();
-                    X509Certificate[] localCerts = sslInfo == null?null:sslInfo.getLocalCertificates();
+                     // Disabling below because getting a Peer Verified Exception
+                     // X509Certificate[] certs = Arrays.stream(peerCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
+                    //X509Certificate[] localCerts = sslInfo == null?null:sslInfo.getLocalCertificates();
+                    X509Certificate[] localCerts = Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
 
                     builder.startObject();
 
-                    builder.field("principal", sslInfo == null?null:sslInfo.getPrincipal());
-                    builder.field("peer_certificates", certs != null && certs.length > 0 ? certs.length + "" : "0");
+                    //builder.field("principal", sslInfo == null?null:sslInfo.getPrincipal());
+                    //builder.field("peer_certificates", certs != null && certs.length > 0 ? certs.length + "" : "0");
 
                     if(showDn == Boolean.TRUE) {
                         builder.field("peer_certificates_list", certs == null?null:Arrays.stream(certs).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()));
                         builder.field("local_certificates_list", localCerts == null?null:Arrays.stream(localCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()));
+                        builder.field("not_after", localCerts == null?null:Arrays.stream(localCerts).map(c->c.getNotAfter().toString()).collect(Collectors.toList()));
+                        builder.field("not_before", localCerts == null?null:Arrays.stream(localCerts).map(c->c.getNotBefore().toString()).collect(Collectors.toList()));
+                        builder.field("local_certificate_version", localCerts == null?null:Arrays.stream(localCerts).map(c->c.getVersion()).collect(Collectors.toList()));
+                        builder.field("Total Channels from local node", channelAnalyzer.getElements());
+                         builder.field("Active Channels from local node", channelAnalyzer.getActiveElements());
                     }
 
                     builder.field("ssl_protocol", sslInfo == null?null:sslInfo.getProtocol());
