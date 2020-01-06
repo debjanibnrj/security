@@ -24,6 +24,7 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.util.ChannelAnalyzer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ExceptionsHelper;
@@ -37,6 +38,8 @@ import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TcpChannel;
+import org.elasticsearch.transport.TcpTransportChannel;
+import org.elasticsearch.transport.netty4.Netty4TcpChannel;
 import org.elasticsearch.transport.netty4.Netty4Transport;
 
 import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyStore;
@@ -57,12 +60,14 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
     private static final Logger logger = LogManager.getLogger(OpenDistroSecuritySSLNettyTransport.class);
     private final OpenDistroSecurityKeyStore odsks;
     private final SslExceptionHandler errorHandler;
+    public ChannelAnalyzer channelAnalyzer;
 
     public OpenDistroSecuritySSLNettyTransport(final Settings settings, final Version version, final ThreadPool threadPool, final NetworkService networkService,
             final PageCacheRecycler pageCacheRecycler, final NamedWriteableRegistry namedWriteableRegistry,
             final CircuitBreakerService circuitBreakerService, final OpenDistroSecurityKeyStore odsks, final SslExceptionHandler errorHandler) {
         super(settings, version, threadPool, networkService, pageCacheRecycler, namedWriteableRegistry, circuitBreakerService);
 
+        this.channelAnalyzer = ChannelAnalyzer.getChannelAnalyzerInstance();
         this.odsks = odsks;
         this.errorHandler = errorHandler;
     }
@@ -79,7 +84,11 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
             }
             
             errorHandler.logError(cause, false);
-            
+            Netty4TcpChannel nettyChannel = (Netty4TcpChannel) channel;
+            if (nettyChannel != null) {
+                channelAnalyzer.removeFromList(nettyChannel.getNettyChannel().id().toString());
+            }
+
             if(cause instanceof NotSslRecordException) {
                 logger.warn("Someone ({}) speaks transport plaintext instead of ssl, will close the channel", channel.getLocalAddress());
                 CloseableChannel.closeChannel(channel, false);
@@ -129,7 +138,12 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
                 }
                 
                 errorHandler.logError(cause, false);
-                
+
+                Netty4TcpChannel nettyChannel = (Netty4TcpChannel) ctx.channel();
+
+                if (nettyChannel != null) {
+                    channelAnalyzer.removeFromList(nettyChannel.getNettyChannel().id().toString());
+                }
                 if(cause instanceof NotSslRecordException) {
                     logger.warn("Someone ({}) speaks transport plaintext instead of ssl, will close the channel", ctx.channel().remoteAddress());
                     ctx.channel().close();

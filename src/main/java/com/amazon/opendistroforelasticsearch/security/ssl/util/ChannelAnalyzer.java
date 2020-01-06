@@ -26,4 +26,10 @@ public class ChannelAnalyzer {
     public void addToList(String key, Netty4TcpChannel channel) {
         contextMap.putIfAbsent(key, channel);
     }
+
+    public void removeFromList(String key) {
+        if (contextMap.containsKey(key)) {
+            contextMap.remove(key);
+        }
+    }
 }

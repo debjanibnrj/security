@@ -103,6 +103,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
     public SslContext transportServerSslContext;
     private SslContext transportClientSslContext;
     private final Environment env;
+    public SSLEngine sslServerEngine;
 
     public DefaultOpenDistroSecurityKeyStore(final Settings settings, final Path configPath) {
         super();
@@ -542,8 +543,10 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
 
     public SSLEngine createServerTransportSSLEngine() throws SSLException {
         log.info("Creating new server transport SSL Engine");
+        log.info("NEW SSLCONTEXT IS {}", transportServerSslContext);
         final SSLEngine engine = transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
         engine.setEnabledProtocols(getEnabledSSLProtocols(this.sslTransportServerProvider, false));
+        this.sslServerEngine = engine;
         return engine;
 
     }

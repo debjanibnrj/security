@@ -79,7 +79,7 @@ public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
             @Override
             public void accept(RestChannel channel) throws Exception {
                 DefaultOpenDistroSecurityKeyStore dodsks = (DefaultOpenDistroSecurityKeyStore) odsks;
-                SSLEngine engine = dodsks.transportServerSslContext.newEngine(PooledByteBufAllocator.DEFAULT);
+                SSLEngine engine = dodsks.sslServerEngine;
                 Certificate[] localCertsFromEngine = engine.getSession().getLocalCertificates();
 
                 XContentBuilder builder = channel.newBuilder();
