@@ -5,6 +5,10 @@ import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyS
 import com.amazon.opendistroforelasticsearch.security.ssl.transport.PrincipalExtractor;
 import com.amazon.opendistroforelasticsearch.security.ssl.util.ChannelAnalyzer;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.ssl.SslHandler;
 import org.apache.logging.log4j.LogManager;
@@ -73,35 +77,42 @@ public class UpdateSearchGuardCertificatesAction extends BaseRestHandler {
                     Map<String, Netty4TcpChannel> map = channelAnalyzer.contextMap;
 
                     for (Netty4TcpChannel nettyChannel : map.values()) {
-                        ChannelPipeline pipeline = nettyChannel.getNettyChannel().pipeline();
-                        final SslHandler sslhandler = (SslHandler) pipeline.get("ssl_server");
-                        logger.info("Logging SSLHandler is {}", sslhandler);
-                    }
-                    SSLEngine engine = odsks.createServerTransportSSLEngine();
-                    for (Netty4TcpChannel nettyChannel : map.values()) {
 
                         ChannelPipeline pipeline = nettyChannel.getNettyChannel().pipeline();
                         final SslHandler sslhandler = (SslHandler) pipeline.get("ssl_server");
 
                         if (sslhandler != null) {
-                            SslHandler newSSLHandler = new SslHandler(engine);
+                            //SslHandler newSSLHandler = new SslHandler(engine);
                             logger.info("SSLHandler is {}", sslhandler);
 
                             // Option 1: replace the handler
-                            pipeline.replace(sslhandler, "ssl_server", newSSLHandler);
+                            //pipeline.replace(sslhandler, "ssl_server", newSSLHandler);
 
-                            // Option 2 (TBD): close the previous one then replace it.
+                            // Option 2 (TBD): close the channel.
+                            builder.field("closing_channel", nettyChannel.getNettyChannel().id().toString());
+                            ChannelFuture future = ((Channel) nettyChannel.getNettyChannel()).close();
+                            future.addListener(new ChannelFutureListener() {
+                                public void operationComplete(ChannelFuture future) {
+                                    // Perform post-closure operation
+                                    // ...
+                                    if (future.isDone()) {
+                                        logger.info("Channel is closed ", future.isDone());
+                                    }
+
+                                }
+                            });
 
 
-                            Certificate[] localCertsFromEngine = engine.getSession().getLocalCertificates();
-                            logger.info("localCertsFromEngine have length {}", localCertsFromEngine == null ? 0: localCertsFromEngine.length);
-                            if (localCertsFromEngine != null) {
-                                X509Certificate[] localCerts = Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
-                                builder.field("updated_local_certificates_list_for_"+nettyChannel.getNettyChannel().id().toString(), localCerts == null?null:
-                                    Arrays.stream(localCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()));
-                            }  else {
-                                builder.field("unable_for", nettyChannel.getNettyChannel().id().toString());
-                            }
+//                            Certificate[] localCertsFromEngine = sslhandler.engine().getSession().getLocalCertificates();
+//                            logger.info("localCertsFromEngine have length {}", localCertsFromEngine == null ? 0: localCertsFromEngine.length);
+//                            if (localCertsFromEngine != null) {
+//                                X509Certificate[] localCerts = Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
+//                                builder.field("updated_local_certificates_list_for_"+nettyChannel.getNettyChannel().id().toString(), localCerts == null?null:
+//                                    Arrays.stream(localCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()));
+//                            }  else {
+//                                builder.field("unable_for", nettyChannel.getNettyChannel().id().toString());
+//                            }
+
                         }
 
 
