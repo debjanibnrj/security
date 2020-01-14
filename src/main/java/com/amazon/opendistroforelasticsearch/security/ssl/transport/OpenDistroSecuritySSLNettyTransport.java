@@ -125,7 +125,9 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         @Override
         protected void initChannel(Channel ch) throws Exception {
             super.initChannel(ch);
+            logger.info("Initializing SSLServerChannelInitializer with ID {} ", ch.id().toString());
             final SslHandler sslHandler = new SslHandler(odsks.createServerTransportSSLEngine());
+            channelAnalyzer.addToList(ch.id().toString(), ch);
             ch.pipeline().addFirst("ssl_server", sslHandler);
         }
         
@@ -259,6 +261,7 @@ public class OpenDistroSecuritySSLNettyTransport extends Netty4Transport {
         @Override
         protected void initChannel(Channel ch) throws Exception {
             super.initChannel(ch);
+            logger.info("Initializing SSLClientChannelInitializer with ID {} ", ch.id().toString());
             ch.pipeline().addFirst("client_ssl_handler", new ClientSSLHandler(odsks, hostnameVerificationEnabled,
                     hostnameVerificationResovleHostName, errorHandler));
         }

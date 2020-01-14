@@ -93,7 +93,10 @@ public class OpenDistroSecuritySSLInfoAction extends BaseRestHandler {
                      // Disabling below because getting a Peer Verified Exception
                      // X509Certificate[] certs = Arrays.stream(peerCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
                     //X509Certificate[] localCerts = sslInfo == null?null:sslInfo.getLocalCertificates();
-                    X509Certificate[] localCerts = Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
+
+                    X509Certificate[] localCerts =
+                        localCertsFromEngine != null ? Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new): null;
+
 
                     builder.startObject();
 

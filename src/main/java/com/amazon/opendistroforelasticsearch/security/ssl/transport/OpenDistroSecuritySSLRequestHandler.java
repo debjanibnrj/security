@@ -117,7 +117,6 @@ implements TransportRequestHandler<T> {
             log.debug("Channel ID is {}",  nettyChannelString);
 
             // Add to the concurrent map
-            channelAnalyzer.addToList(nettyChannelString, nettyChannel);
             log.debug("Action is {}",  action );
             log.debug("Channel ID Active {}",  nettyChannel.getNettyChannel().isActive());
             log.debug("Channel Config {}",  nettyChannel.getNettyChannel().config().toString());

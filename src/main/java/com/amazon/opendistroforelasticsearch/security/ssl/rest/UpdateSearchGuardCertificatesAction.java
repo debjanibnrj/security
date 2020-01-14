@@ -5,6 +5,7 @@ import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyS
 import com.amazon.opendistroforelasticsearch.security.ssl.transport.PrincipalExtractor;
 import com.amazon.opendistroforelasticsearch.security.ssl.util.ChannelAnalyzer;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.ssl.SslHandler;
 import org.apache.logging.log4j.LogManager;
@@ -70,17 +71,17 @@ public class UpdateSearchGuardCertificatesAction extends BaseRestHandler {
                     odsks.UpdateCertificates();
 
                     DefaultOpenDistroSecurityKeyStore ks = (DefaultOpenDistroSecurityKeyStore) odsks;
-                    Map<String, Netty4TcpChannel> map = channelAnalyzer.contextMap;
+                    Map<String, Channel> map = channelAnalyzer.contextMap;
 
-                    for (Netty4TcpChannel nettyChannel : map.values()) {
-                        ChannelPipeline pipeline = nettyChannel.getNettyChannel().pipeline();
+                    for (Channel nettyChannel : map.values()) {
+                        ChannelPipeline pipeline = nettyChannel.pipeline();
                         final SslHandler sslhandler = (SslHandler) pipeline.get("ssl_server");
                         logger.info("Logging SSLHandler is {}", sslhandler);
                     }
                     SSLEngine engine = odsks.createServerTransportSSLEngine();
-                    for (Netty4TcpChannel nettyChannel : map.values()) {
+                    for (Channel nettyChannel : map.values()) {
 
-                        ChannelPipeline pipeline = nettyChannel.getNettyChannel().pipeline();
+                        ChannelPipeline pipeline = nettyChannel.pipeline();
                         final SslHandler sslhandler = (SslHandler) pipeline.get("ssl_server");
 
                         if (sslhandler != null) {
@@ -97,10 +98,10 @@ public class UpdateSearchGuardCertificatesAction extends BaseRestHandler {
                             logger.info("localCertsFromEngine have length {}", localCertsFromEngine == null ? 0: localCertsFromEngine.length);
                             if (localCertsFromEngine != null) {
                                 X509Certificate[] localCerts = Arrays.stream(localCertsFromEngine).filter(s -> s instanceof X509Certificate).toArray(X509Certificate[]::new);
-                                builder.field("updated_local_certificates_list_for_"+nettyChannel.getNettyChannel().id().toString(), localCerts == null?null:
+                                builder.field("updated_local_certificates_list_for_"+nettyChannel.id().toString(), localCerts == null?null:
                                     Arrays.stream(localCerts).map(c->c.getSubjectDN().getName()).collect(Collectors.toList()));
                             }  else {
-                                builder.field("unable_for", nettyChannel.getNettyChannel().id().toString());
+                                builder.field("unable_for", nettyChannel.id().toString());
                             }
                         }
 
