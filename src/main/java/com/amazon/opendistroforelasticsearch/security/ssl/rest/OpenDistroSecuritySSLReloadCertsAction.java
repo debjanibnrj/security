@@ -38,8 +38,8 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
 
     private final Settings settings;
     private final OpenDistroSecurityKeyStore odsks;
-    private final ThreadContext threadContext;
-    private final AdminDNs adminDns;
+    private ThreadContext threadContext;
+    private AdminDNs adminDns;
 
     public OpenDistroSecuritySSLReloadCertsAction(final Settings settings,
                                                   final RestController restController,
@@ -49,8 +49,10 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
         super(settings);
         this.settings = settings;
         this.odsks = odsks;
-        this.adminDns = adminDns;
-        this.threadContext = threadPool.getThreadContext();
+        if (!isSSLOnly(settings)) {
+            this.adminDns = adminDns;
+            this.threadContext = threadPool.getThreadContext();
+        }
         restController.registerHandler(PUT, "_opendistro/_security/api/ssl/{certType}/reloadcerts/", this);
     }
 
@@ -82,10 +84,9 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
                 XContentBuilder builder = channel.newBuilder();
                 BytesRestResponse response = null;
 
-                // Check for Super admin user
-                final User user = (User) threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
-                if(user ==null||!adminDns.isAdmin(user)) {
-                    response = new BytesRestResponse(RestStatus.FORBIDDEN, "");
+                // Check for Super admin user if sslonly is not enabled
+                if (!isSSLOnly(settings) && !userIsAdmin()) {
+                    response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
                 } else {
                     try {
                         builder.startObject();
@@ -129,7 +130,17 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
                 }
                 channel.sendResponse(response);
             }
+
+            private boolean userIsAdmin() {
+                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+                return user != null && adminDns.isAdmin(user);
+            }
+
         };
+    }
+
+    private boolean isSSLOnly(final Settings settings) {
+        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
     }
 
     @Override

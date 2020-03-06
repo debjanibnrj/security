@@ -251,7 +251,7 @@ public abstract class AbstractSecurityUnitTest {
         return new NodeSettingsSupplier() {
             @Override
             public Settings get(int i) {
-                return minimumSecuritySettingsBuilder(i, true, false).put(other).build();
+                return minimumSecuritySettingsBuilder(i, true, hasCustomTransportSettings(other)).put(other).build();
             }
         };
     }
