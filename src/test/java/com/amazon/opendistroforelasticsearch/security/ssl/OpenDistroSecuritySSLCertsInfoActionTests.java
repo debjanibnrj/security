@@ -11,6 +11,7 @@ import net.minidev.json.JSONObject;
 import org.elasticsearch.common.settings.Settings;
 import org.junit.Assert;
 import org.junit.Test;
+import org.opensaml.xmlsec.signature.P;
 
 import java.util.List;
 import java.util.Map;
@@ -29,8 +30,8 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
         ));
 
     @Test
-    public void testCertInfo_Pass() throws Exception {
-        initTestCluster();
+    public void testCertInfo_Pass_SSLOnly() throws Exception {
+        initTestCluster(true);
         final RestHelper rh = restHelper();
         rh.enableHTTPClientSSL = true;
         rh.trustHTTPServerCertificate = true;
@@ -45,8 +46,24 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
     }
 
     @Test
-    public void testCertInfoFail_NonAdmin() throws Exception {
-        initTestCluster();
+    public void testCertInfo_Pass_NotSSLOnly() throws Exception {
+        initTestCluster(false);
+        final RestHelper rh = restHelper();
+        rh.enableHTTPClientSSL = true;
+        rh.trustHTTPServerCertificate = true;
+        rh.sendAdminCertificate = true;
+        rh.keystore = "kirk-keystore.jks";
+
+        final RestHelper.HttpResponse transportInfoRestResponse = rh.executeGetRequest(ENDPOINT);
+        JSONObject expectedJsonResponse = new JSONObject();
+        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
+        Assert.assertEquals(expectedJsonResponse.toString(), transportInfoRestResponse.getBody());
+    }
+
+    @Test
+    public void testCertInfo_NonAdminFail_NotSSLOnly() throws Exception {
+        initTestCluster(false);
         final RestHelper rh = restHelper();
         rh.enableHTTPClientSSL = true;
         rh.trustHTTPServerCertificate = true;
@@ -61,12 +78,12 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
     /**
      * Helper method to initialize test cluster for CertInfoAction Tests
      */
-    private void initTestCluster() throws Exception {
+    private void initTestCluster(boolean sslOnly) throws Exception {
         final Settings settings = Settings.builder()
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
@@ -74,7 +91,13 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, true)
+            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, sslOnly)
             .build();
-        setup(settings);
+
+        if (sslOnly) {
+            setupSslOnlyMode(settings);
+        } else {
+            setup(settings);
+        }
     }
 }
