@@ -51,8 +51,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
         super();
         this.settings = settings;
         this.odsks = odsks;
-        this.adminDns = adminDns;
-        this.threadContext = threadPool.getThreadContext();
+        if (!isSSLOnly(settings)) {
+            this.adminDns = adminDns;
+            this.threadContext = threadPool.getThreadContext();
+        }
         restController.registerHandler(GET, "/_opendistro/_security/api/ssl/certs", this);
     }
 
@@ -97,9 +99,8 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
                 XContentBuilder builder = channel.newBuilder();
                 BytesRestResponse response = null;
 
-                // Check for Super admin user
-                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
-                if(user == null || !adminDns.isAdmin(user)) {
+                // Check for Super admin user if sslonly is not enabled
+                if (!isSSLOnly(settings) && !userIsAdmin()) {
                     response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
                 } else {
                     try {
@@ -131,6 +132,12 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
                 }
                 channel.sendResponse(response);
             }
+
+            private boolean userIsAdmin() {
+                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+                return user != null && adminDns.isAdmin(user);
+            }
+
 
             /**
              * Helper that construct list of certificate details.
@@ -166,6 +173,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
                     .collect(Collectors.toList());
             }
         };
+    }
+
+    private boolean isSSLOnly(final Settings settings) {
+        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
     }
 
     @Override

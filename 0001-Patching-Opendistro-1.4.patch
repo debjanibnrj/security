@@ -1,0 +1,1136 @@
+From 2f0e0b4f4ac9a3bed55160c40b2e8ddfb6f232b3 Mon Sep 17 00:00:00 2001
+From: Debjani Banerjee <bdebjani@amazon.com>
+Date: Thu, 5 Mar 2020 21:58:12 -0800
+Subject: [PATCH] Patching Opendistro-1.4
+
+---
+ 0001-Patching-Opendistro-1.4.patch                 | 560 +++++++++++++++++++++
+ .../security/OpenDistroSecurityPlugin.java         |  13 +-
+ .../rest/OpenDistroSecuritySSLCertsInfoAction.java |  21 +-
+ .../OpenDistroSecuritySSLReloadCertsAction.java    |  27 +-
+ .../OpenDistroSecuritySSLCertsInfoActionTests.java |  41 +-
+ ...penDistroSecuritySSLReloadCertsActionTests.java | 152 ++++--
+ .../security/test/AbstractSecurityUnitTest.java    |   2 +-
+ 7 files changed, 744 insertions(+), 72 deletions(-)
+ create mode 100644 0001-Patching-Opendistro-1.4.patch
+
+diff --git a/0001-Patching-Opendistro-1.4.patch b/0001-Patching-Opendistro-1.4.patch
+new file mode 100644
+index 0000000..360586a
+--- /dev/null
++++ b/0001-Patching-Opendistro-1.4.patch
+@@ -0,0 +1,560 @@
++From 495157e1c1b5a19dd5c31fb11622afdc3c434437 Mon Sep 17 00:00:00 2001
++From: Debjani Banerjee <bdebjani@amazon.com>
++Date: Thu, 5 Mar 2020 21:58:12 -0800
++Subject: [PATCH] Patching Opendistro-1.4
++
++---
++ .../security/OpenDistroSecurityPlugin.java         |  12 +-
++ .../rest/OpenDistroSecuritySSLCertsInfoAction.java |  21 ++-
++ .../OpenDistroSecuritySSLReloadCertsAction.java    |  27 ++--
++ .../OpenDistroSecuritySSLCertsInfoActionTests.java |  41 ++++--
++ ...penDistroSecuritySSLReloadCertsActionTests.java | 152 +++++++++++++++------
++ .../security/test/AbstractSecurityUnitTest.java    |   2 +-
++ 6 files changed, 184 insertions(+), 71 deletions(-)
++
++diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
++index a45dd19..a89901a 100644
++--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
+++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
++@@ -246,7 +246,6 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
++             this.dlsFlsAvailable = false;
++             this.dlsFlsConstructor = null;
++             this.advancedModulesEnabled = false;
++-            this.sslCertReloadEnabled = false;
++             complianceConfig = null;
++             log.warn("Open Distro Security plugin run in ssl only mode. No authentication or authorization is performed");
++             return;
++@@ -443,23 +442,25 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
++         if (!client && !disabled) {
++ 
++             handlers.addAll(super.getRestHandlers(settings, restController, clusterSettings, indexScopedSettings, settingsFilter, indexNameExpressionResolver, nodesInCluster));
+++            handlers.add(new OpenDistroSecuritySSLCertsInfoAction(settings, restController, odsks, threadPool, adminDns));
+++
+++            if (sslCertReloadEnabled) {
+++                handlers.add(new OpenDistroSecuritySSLReloadCertsAction(settings, restController, odsks, threadPool, adminDns));
+++            }
++ 
++             if(!sslOnly) {
++                 handlers.add(new OpenDistroSecurityInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool)));
++                 handlers.add(new KibanaInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool)));
++                 handlers.add(new OpenDistroSecurityHealthAction(settings, restController, Objects.requireNonNull(backendRegistry)));
++-                handlers.add(new OpenDistroSecuritySSLCertsInfoAction(settings, restController, odsks, Objects.requireNonNull(threadPool), Objects.requireNonNull(adminDns)));
++                 handlers.add(new TenantInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool),
++ 				Objects.requireNonNull(cs), Objects.requireNonNull(adminDns)));
++ 
++-                if (sslCertReloadEnabled) {
++-                    handlers.add(new OpenDistroSecuritySSLReloadCertsAction(settings, restController, odsks, Objects.requireNonNull(threadPool), Objects.requireNonNull(adminDns)));
++-                }
++                 Collection<RestHandler> apiHandler = ReflectionHelper
++                         .instantiateMngtRestApiHandler(settings, configPath, restController, localClient, adminDns, cr, cs, Objects.requireNonNull(principalExtractor),  evaluator, threadPool, Objects.requireNonNull(auditLog));
++                 handlers.addAll(apiHandler);
++                 log.debug("Added {} management rest handler(s)", apiHandler.size());
++             }
+++
++         }
++ 
++         return handlers;
++@@ -849,6 +850,7 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
++         settings.addAll(super.getSettings());
++         
++         settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false, Property.NodeScope, Property.Filtered));
+++        settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, false, Property.NodeScope, Property.Filtered));
++ 
++         // Protected index settings
++         settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_PROTECTED_INDICES_ENABLED_KEY, ConfigConstants.OPENDISTRO_SECURITY_PROTECTED_INDICES_ENABLED_DEFAULT, Property.NodeScope, Property.Filtered, Property.Final));
++diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
++index 112e7ed..98a7632 100644
++--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
+++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
++@@ -51,8 +51,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
++         super();
++         this.settings = settings;
++         this.odsks = odsks;
++-        this.adminDns = adminDns;
++-        this.threadContext = threadPool.getThreadContext();
+++        if (!isSSLOnly(settings)) {
+++            this.adminDns = adminDns;
+++            this.threadContext = threadPool.getThreadContext();
+++        }
++         restController.registerHandler(GET, "/_opendistro/_security/api/ssl/certs", this);
++     }
++ 
++@@ -97,9 +99,8 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
++                 XContentBuilder builder = channel.newBuilder();
++                 BytesRestResponse response = null;
++ 
++-                // Check for Super admin user
++-                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
++-                if(user == null || !adminDns.isAdmin(user)) {
+++                // Check for Super admin user if sslonly is not enabled
+++                if (!isSSLOnly(settings) && !userIsAdmin()) {
++                     response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
++                 } else {
++                     try {
++@@ -132,6 +133,12 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
++                 channel.sendResponse(response);
++             }
++ 
+++            private boolean userIsAdmin() {
+++                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+++                return user != null && adminDns.isAdmin(user);
+++            }
+++
+++
++             /**
++              * Helper that construct list of certificate details.
++              * @param certs list of certificates.
++@@ -168,6 +175,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
++         };
++     }
++ 
+++    private boolean isSSLOnly(final Settings settings) {
+++        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
+++    }
+++
++     @Override
++     public String getName() {
++         return "SSL Certificate Information Action";
++diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
++index 5077360..b235925 100644
++--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
+++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
++@@ -38,8 +38,8 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
++ 
++     private final Settings settings;
++     private final OpenDistroSecurityKeyStore odsks;
++-    private final ThreadContext threadContext;
++-    private final AdminDNs adminDns;
+++    private ThreadContext threadContext;
+++    private AdminDNs adminDns;
++ 
++     public OpenDistroSecuritySSLReloadCertsAction(final Settings settings,
++                                                   final RestController restController,
++@@ -49,8 +49,10 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
++         super();
++         this.settings = settings;
++         this.odsks = odsks;
++-        this.adminDns = adminDns;
++-        this.threadContext = threadPool.getThreadContext();
+++        if (!isSSLOnly(settings)) {
+++            this.adminDns = adminDns;
+++            this.threadContext = threadPool.getThreadContext();
+++        }
++         restController.registerHandler(PUT, "_opendistro/_security/api/ssl/{certType}/reloadcerts/", this);
++     }
++ 
++@@ -82,10 +84,9 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
++                 XContentBuilder builder = channel.newBuilder();
++                 BytesRestResponse response = null;
++ 
++-                // Check for Super admin user
++-                final User user = (User) threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
++-                if(user ==null||!adminDns.isAdmin(user)) {
++-                    response = new BytesRestResponse(RestStatus.FORBIDDEN, "");
+++                // Check for Super admin user if sslonly is not enabled
+++                if (!isSSLOnly(settings) && !userIsAdmin()) {
+++                    response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
++                 } else {
++                     try {
++                         builder.startObject();
++@@ -129,9 +130,19 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
++                 }
++                 channel.sendResponse(response);
++             }
+++
+++            private boolean userIsAdmin() {
+++                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+++                return user != null && adminDns.isAdmin(user);
+++            }
+++
++         };
++     }
++ 
+++    private boolean isSSLOnly(final Settings settings) {
+++        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
+++    }
+++
++     @Override
++     public String getName() {
++         return "SSL Cert Reload Action";
++diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
++index 38ea1c8..acc9ec6 100644
++--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
+++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
++@@ -11,6 +11,7 @@ import net.minidev.json.JSONObject;
++ import org.elasticsearch.common.settings.Settings;
++ import org.junit.Assert;
++ import org.junit.Test;
+++import org.opensaml.xmlsec.signature.P;
++ 
++ import java.util.List;
++ import java.util.Map;
++@@ -29,8 +30,8 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
++         ));
++ 
++     @Test
++-    public void testCertInfo_Pass() throws Exception {
++-        initTestCluster();
+++    public void testCertInfo_Pass_SSLOnly() throws Exception {
+++        initTestCluster(true);
++         final RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++         rh.trustHTTPServerCertificate = true;
++@@ -45,8 +46,24 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
++     }
++ 
++     @Test
++-    public void testCertInfoFail_NonAdmin() throws Exception {
++-        initTestCluster();
+++    public void testCertInfo_Pass_NotSSLOnly() throws Exception {
+++        initTestCluster(false);
+++        final RestHelper rh = restHelper();
+++        rh.enableHTTPClientSSL = true;
+++        rh.trustHTTPServerCertificate = true;
+++        rh.sendAdminCertificate = true;
+++        rh.keystore = "kirk-keystore.jks";
+++
+++        final RestHelper.HttpResponse transportInfoRestResponse = rh.executeGetRequest(ENDPOINT);
+++        JSONObject expectedJsonResponse = new JSONObject();
+++        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+++        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
+++        Assert.assertEquals(expectedJsonResponse.toString(), transportInfoRestResponse.getBody());
+++    }
+++
+++    @Test
+++    public void testCertInfo_NonAdminFail_NotSSLOnly() throws Exception {
+++        initTestCluster(false);
++         final RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++         rh.trustHTTPServerCertificate = true;
++@@ -61,12 +78,12 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
++     /**
++      * Helper method to initialize test cluster for CertInfoAction Tests
++      */
++-    private void initTestCluster() throws Exception {
+++    private void initTestCluster(boolean sslOnly) throws Exception {
++         final Settings settings = Settings.builder()
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
++-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
++-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
++-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
+++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
+++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
+++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
++@@ -74,7 +91,13 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
++             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, true)
+++            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, sslOnly)
++             .build();
++-        setup(settings);
+++
+++        if (sslOnly) {
+++            setupSslOnlyMode(settings);
+++        } else {
+++            setup(settings);
+++        }
++     }
++ }
++diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
++index ffc05e5..5f1d3ed 100644
++--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
+++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
++@@ -48,13 +48,13 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++     );
++ 
++     @Test
++-    public void testReloadTransportSSLCertsPass() throws Exception {
+++    public void testSSLReloadCerts_Pass_NonSSLOnly() throws Exception {
++         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++ 
++-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
+++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
++ 
++         RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++@@ -84,16 +84,32 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
++         expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
++         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
+++
+++        // Test Valid Case: Change rest file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
+++        reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
+++
+++        Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
+++        expectedJsonResponse = new JSONObject();
+++        expectedJsonResponse.appendField("message", "updated http certs");
+++        Assert.assertEquals(expectedJsonResponse.toString(), reloadCertsResponse.getBody());
+++
+++        certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
+++        expectedJsonResponse = new JSONObject();
+++        expectedJsonResponse.appendField("http_certificates_list", NEW_NODE_CERT_DETAILS);
+++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
+++        Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
++     }
++ 
++     @Test
++-    public void testReloadHttpSSLCertsPass() throws Exception {
+++    public void testSSLReloadCerts_Pass_SSLOnly() throws Exception {
++         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++ 
++-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
+++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, true);
++ 
++         RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++@@ -102,15 +118,32 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         rh.keystore = "ssl/reload/kirk-keystore.jks";
++ 
++         String certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
+++
++         JSONObject expectedJsonResponse = new JSONObject();
++         expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
++         expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
++         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
++ 
+++        // Test Valid Case: Change transport file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
+++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+++
+++        Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
+++        expectedJsonResponse = new JSONObject();
+++        expectedJsonResponse.appendField("message", "updated transport certs");
+++        Assert.assertEquals(expectedJsonResponse.toString(), reloadCertsResponse.getBody());
+++
+++        certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
+++        expectedJsonResponse = new JSONObject();
+++        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
+++        Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
+++
++         // Test Valid Case: Change rest file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
++-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
+++        reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
++ 
++         Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
++         expectedJsonResponse = new JSONObject();
++@@ -120,43 +153,55 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
++         expectedJsonResponse = new JSONObject();
++         expectedJsonResponse.appendField("http_certificates_list", NEW_NODE_CERT_DETAILS);
++-        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
+++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
++         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
++     }
++ 
++     @Test
++-    public void testReloadHttpSSLCerts_FailWrongUri() throws Exception {
++-
+++    public void testSSLReloadFail_InvalidCase_SSLOnly() throws Exception {
++         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++ 
++-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
+++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, true);
++ 
+++        // Test Invalid Case: Change transport file details to "ssl/pem/node-wrong.crt.pem"
++         RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++         rh.trustHTTPServerCertificate = true;
++         rh.sendAdminCertificate = true;
++         rh.keystore = "ssl/reload/kirk-keystore.jks";
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.key.pem").toString(), pemKeyFilePath);
++ 
++-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest("_opendistro/_security/api/ssl/wrong/reloadcerts", null);
+++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+++        Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
++         JSONObject expectedResponse = new JSONObject();
++-        // Note: toString and toJSONString replace / with \/. This helps get rid of the additional \ character.
++-        expectedResponse.put("message", "invalid uri path, please use /_opendistro/_security/api/ssl/http/reload or /_opendistro/_security/api/ssl/transport/reload");
++-        final String expectedResponseString = expectedResponse.toString().replace("\\", "");
++-        Assert.assertEquals(expectedResponseString, reloadCertsResponse.getBody());
++-    }
+++        expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: " +
+++            "New Certs do not have valid Issuer DN, Subject DN or SAN.]; nested: Exception[New Certs do not have valid Issuer DN, Subject DN or SAN.];");
+++        Assert.assertEquals(expectedResponse.toString(), reloadCertsResponse.getBody());
+++
+++
+++        // Test Invalid Case: Reloading with same certificates
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++ 
+++        reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+++        Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
+++        expectedResponse = new JSONObject();
+++        expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: New certificates should not expire before the current ones.]; nested: Exception[New certificates should not expire before the current ones.];");
+++        Assert.assertEquals(expectedResponse.toString(), reloadCertsResponse.getBody());
+++    }
++ 
++     @Test
++-    public void testSSLReloadFail_UnAuthorizedUser() throws Exception {
++-        final String transportPemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++-        final String transportPemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), transportPemCertFilePath);
++-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), transportPemKeyFilePath);
+++    public void testSSLReloadFail_InvalidCase_NonSSLOnly() throws Exception {
+++        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+++        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++ 
++-        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, true);
+++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
++ 
++         // Test endpoint for non-admin user
++         RestHelper rh = restHelper();
++@@ -165,23 +210,12 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         rh.sendAdminCertificate = true;
++         rh.keystore = "ssl/reload/spock-keystore.jks";
++ 
++-        final RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++         Assert.assertEquals(401, reloadCertsResponse.getStatusCode());
++         Assert.assertEquals("Unauthorized", reloadCertsResponse.getStatusReason());
++-    }
++-
++-
++-    @Test
++-    public void testSSLReloadFail_InvalidDNAndDate() throws Exception {
++-        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++-        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++-
++-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
++ 
++         // Test Invalid Case: Change transport file details to "ssl/pem/node-wrong.crt.pem"
++-        RestHelper rh = restHelper();
+++        rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++         rh.trustHTTPServerCertificate = true;
++         rh.sendAdminCertificate = true;
++@@ -189,7 +223,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.crt.pem").toString(), pemCertFilePath);
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.key.pem").toString(), pemKeyFilePath);
++ 
++-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+++        reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++         Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
++         JSONObject expectedResponse = new JSONObject();
++         expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: " +
++@@ -209,7 +243,31 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++     }
++ 
++     @Test
++-    public void testSSLReloadFail_NoReloadSet() throws Exception {
+++    public void testHttpReloadSSLCerts_FailWrongUri_NonSSLOnly() throws Exception {
+++
+++        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+++        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+++
+++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
+++
+++        RestHelper rh = restHelper();
+++        rh.enableHTTPClientSSL = true;
+++        rh.trustHTTPServerCertificate = true;
+++        rh.sendAdminCertificate = true;
+++        rh.keystore = "ssl/reload/kirk-keystore.jks";
+++
+++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest("_opendistro/_security/api/ssl/wrong/reloadcerts", null);
+++        JSONObject expectedResponse = new JSONObject();
+++        // Note: toString and toJSONString replace / with \/. This helps get rid of the additional \ character.
+++        expectedResponse.put("message", "invalid uri path, please use /_opendistro/_security/api/ssl/http/reload or /_opendistro/_security/api/ssl/transport/reload");
+++        final String expectedResponseString = expectedResponse.toString().replace("\\", "");
+++        Assert.assertEquals(expectedResponseString, reloadCertsResponse.getBody());
+++    }
+++
+++    @Test
+++    public void testSSLReloadFail_NoReloadSet_NonSSLOnly() throws Exception {
++         final File transportPemCertFile = testFolder.newFile("node-temp-cert.pem");
++         final File transportPemKeyFile = testFolder.newFile("node-temp-key.pem");
++         final String transportPemCertFilePath = transportPemCertFile.getAbsolutePath();
++@@ -218,7 +276,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), transportPemKeyFilePath);
++ 
++         // This is when SSLCertReload property is set to false
++-        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, false);
+++        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, false, false);
++ 
++         RestHelper rh = restHelper();
++         rh.enableHTTPClientSSL = true;
++@@ -243,14 +301,16 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++      * @param httpPemKeyFilePath Absolute Path to transport pem key file
++      * @param sslCertReload Sets the ssl cert reload flag
++      */
++-    private void initTestCluster(final String transportPemCertFilePath, final String transportPemKeyFilePath, final String httpPemCertFilePath, final String httpPemKeyFilePath, final boolean sslCertReload) throws Exception {
++-        final Settings settings = Settings.builder()
++-            .putList(ConfigConstants.OPENDISTRO_SECURITY_AUTHCZ_ADMIN_DN, "CN=kirk,OU=client,O=client,L=Test,C=DE")
++-            .putList(ConfigConstants.OPENDISTRO_SECURITY_NODES_DN, "C=DE,L=Test,O=Test,OU=SSL,CN=node-1.example.com")
+++    private void initTestCluster(final String transportPemCertFilePath, final String transportPemKeyFilePath, final String httpPemCertFilePath, final String httpPemKeyFilePath,
+++                                 final boolean sslCertReload, final boolean sslOnly) throws Exception {
+++
+++        final Settings.Builder settingsBuilder = Settings.builder()
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
+++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_ALIAS, "node-1")
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
+++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_ALIAS, "node-1")
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, transportPemCertFilePath)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, transportPemKeyFilePath)
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/root-ca.pem"))
++@@ -258,7 +318,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, httpPemKeyFilePath) // "ssl/reload/node.key.pem"
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/root-ca.pem"))
++             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, sslCertReload)
++-            .build();
+++            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, sslOnly);
++ 
++         final Settings initTransportClientSettings = Settings.builder()
++             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH,
++@@ -268,7 +328,13 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
++                 FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/kirk-keystore.jks"))
++             .build();
++ 
++-        setup(initTransportClientSettings, new DynamicSecurityConfig(), settings, true, ClusterConfiguration.DEFAULT);
+++        if (sslOnly){
+++            setupSslOnlyMode(settingsBuilder.build());
+++        } else {
+++            settingsBuilder
+++                .putList(ConfigConstants.OPENDISTRO_SECURITY_NODES_DN, "C=DE,L=Test,O=Test,OU=SSL,CN=node-1.example.com");
+++            setup(initTransportClientSettings, new DynamicSecurityConfig(), settingsBuilder.build(), true, ClusterConfiguration.DEFAULT);
+++        }
++     }
++ 
++ }
++diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
++index 53411d7..4dd4e40 100644
++--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
+++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
++@@ -253,7 +253,7 @@ public abstract class AbstractSecurityUnitTest {
++         return new NodeSettingsSupplier() {
++             @Override
++             public Settings get(int i) {
++-                return minimumSecuritySettingsBuilder(i, true, false).put(other).build();
+++                return minimumSecuritySettingsBuilder(i, true, hasCustomTransportSettings(other)).put(other).build();
++             }
++         };
++     }
++-- 
++2.12.2
++
+diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
+index a45dd19..dfe0b08 100644
+--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/OpenDistroSecurityPlugin.java
+@@ -246,7 +246,6 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
+             this.dlsFlsAvailable = false;
+             this.dlsFlsConstructor = null;
+             this.advancedModulesEnabled = false;
+-            this.sslCertReloadEnabled = false;
+             complianceConfig = null;
+             log.warn("Open Distro Security plugin run in ssl only mode. No authentication or authorization is performed");
+             return;
+@@ -443,23 +442,25 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
+         if (!client && !disabled) {
+ 
+             handlers.addAll(super.getRestHandlers(settings, restController, clusterSettings, indexScopedSettings, settingsFilter, indexNameExpressionResolver, nodesInCluster));
++            handlers.add(new OpenDistroSecuritySSLCertsInfoAction(settings, restController, odsks, threadPool, adminDns));
++
++            if (sslCertReloadEnabled) {
++                handlers.add(new OpenDistroSecuritySSLReloadCertsAction(settings, restController, odsks, threadPool, adminDns));
++            }
+ 
+             if(!sslOnly) {
+                 handlers.add(new OpenDistroSecurityInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool)));
+                 handlers.add(new KibanaInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool)));
+                 handlers.add(new OpenDistroSecurityHealthAction(settings, restController, Objects.requireNonNull(backendRegistry)));
+-                handlers.add(new OpenDistroSecuritySSLCertsInfoAction(settings, restController, odsks, Objects.requireNonNull(threadPool), Objects.requireNonNull(adminDns)));
+                 handlers.add(new TenantInfoAction(settings, restController, Objects.requireNonNull(evaluator), Objects.requireNonNull(threadPool),
+ 				Objects.requireNonNull(cs), Objects.requireNonNull(adminDns)));
+ 
+-                if (sslCertReloadEnabled) {
+-                    handlers.add(new OpenDistroSecuritySSLReloadCertsAction(settings, restController, odsks, Objects.requireNonNull(threadPool), Objects.requireNonNull(adminDns)));
+-                }
+                 Collection<RestHandler> apiHandler = ReflectionHelper
+                         .instantiateMngtRestApiHandler(settings, configPath, restController, localClient, adminDns, cr, cs, Objects.requireNonNull(principalExtractor),  evaluator, threadPool, Objects.requireNonNull(auditLog));
+                 handlers.addAll(apiHandler);
+                 log.debug("Added {} management rest handler(s)", apiHandler.size());
+             }
++
+         }
+ 
+         return handlers;
+@@ -849,6 +850,7 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
+         settings.addAll(super.getSettings());
+         
+         settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false, Property.NodeScope, Property.Filtered));
++        settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, false, Property.NodeScope, Property.Filtered));
+ 
+         // Protected index settings
+         settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_PROTECTED_INDICES_ENABLED_KEY, ConfigConstants.OPENDISTRO_SECURITY_PROTECTED_INDICES_ENABLED_DEFAULT, Property.NodeScope, Property.Filtered, Property.Final));
+@@ -984,7 +986,6 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin
+             settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_UNSUPPORTED_ALLOW_NOW_IN_DLS, false, Property.NodeScope, Property.Filtered));
+             settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_UNSUPPORTED_RESTAPI_ALLOW_SECURITYCONFIG_MODIFICATION, false, Property.NodeScope, Property.Filtered));
+             settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_UNSUPPORTED_LOAD_STATIC_RESOURCES, true, Property.NodeScope, Property.Filtered));
+-            settings.add(Setting.boolSetting(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, false, Property.NodeScope, Property.Filtered));
+         }
+         
+         return settings;
+diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
+index 112e7ed..98a7632 100644
+--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLCertsInfoAction.java
+@@ -51,8 +51,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
+         super();
+         this.settings = settings;
+         this.odsks = odsks;
+-        this.adminDns = adminDns;
+-        this.threadContext = threadPool.getThreadContext();
++        if (!isSSLOnly(settings)) {
++            this.adminDns = adminDns;
++            this.threadContext = threadPool.getThreadContext();
++        }
+         restController.registerHandler(GET, "/_opendistro/_security/api/ssl/certs", this);
+     }
+ 
+@@ -97,9 +99,8 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
+                 XContentBuilder builder = channel.newBuilder();
+                 BytesRestResponse response = null;
+ 
+-                // Check for Super admin user
+-                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+-                if(user == null || !adminDns.isAdmin(user)) {
++                // Check for Super admin user if sslonly is not enabled
++                if (!isSSLOnly(settings) && !userIsAdmin()) {
+                     response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
+                 } else {
+                     try {
+@@ -132,6 +133,12 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
+                 channel.sendResponse(response);
+             }
+ 
++            private boolean userIsAdmin() {
++                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
++                return user != null && adminDns.isAdmin(user);
++            }
++
++
+             /**
+              * Helper that construct list of certificate details.
+              * @param certs list of certificates.
+@@ -168,6 +175,10 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
+         };
+     }
+ 
++    private boolean isSSLOnly(final Settings settings) {
++        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
++    }
++
+     @Override
+     public String getName() {
+         return "SSL Certificate Information Action";
+diff --git a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
+index 5077360..b235925 100644
+--- a/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
++++ b/src/main/java/com/amazon/opendistroforelasticsearch/security/ssl/rest/OpenDistroSecuritySSLReloadCertsAction.java
+@@ -38,8 +38,8 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
+ 
+     private final Settings settings;
+     private final OpenDistroSecurityKeyStore odsks;
+-    private final ThreadContext threadContext;
+-    private final AdminDNs adminDns;
++    private ThreadContext threadContext;
++    private AdminDNs adminDns;
+ 
+     public OpenDistroSecuritySSLReloadCertsAction(final Settings settings,
+                                                   final RestController restController,
+@@ -49,8 +49,10 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
+         super();
+         this.settings = settings;
+         this.odsks = odsks;
+-        this.adminDns = adminDns;
+-        this.threadContext = threadPool.getThreadContext();
++        if (!isSSLOnly(settings)) {
++            this.adminDns = adminDns;
++            this.threadContext = threadPool.getThreadContext();
++        }
+         restController.registerHandler(PUT, "_opendistro/_security/api/ssl/{certType}/reloadcerts/", this);
+     }
+ 
+@@ -82,10 +84,9 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
+                 XContentBuilder builder = channel.newBuilder();
+                 BytesRestResponse response = null;
+ 
+-                // Check for Super admin user
+-                final User user = (User) threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
+-                if(user ==null||!adminDns.isAdmin(user)) {
+-                    response = new BytesRestResponse(RestStatus.FORBIDDEN, "");
++                // Check for Super admin user if sslonly is not enabled
++                if (!isSSLOnly(settings) && !userIsAdmin()) {
++                    response = new BytesRestResponse(RestStatus.FORBIDDEN, builder);
+                 } else {
+                     try {
+                         builder.startObject();
+@@ -129,9 +130,19 @@ public class OpenDistroSecuritySSLReloadCertsAction extends BaseRestHandler {
+                 }
+                 channel.sendResponse(response);
+             }
++
++            private boolean userIsAdmin() {
++                final User user = (User)threadContext.getTransient(ConfigConstants.OPENDISTRO_SECURITY_USER);
++                return user != null && adminDns.isAdmin(user);
++            }
++
+         };
+     }
+ 
++    private boolean isSSLOnly(final Settings settings) {
++        return settings.getAsBoolean(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, false);
++    }
++
+     @Override
+     public String getName() {
+         return "SSL Cert Reload Action";
+diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
+index 38ea1c8..acc9ec6 100644
+--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLCertsInfoActionTests.java
+@@ -11,6 +11,7 @@ import net.minidev.json.JSONObject;
+ import org.elasticsearch.common.settings.Settings;
+ import org.junit.Assert;
+ import org.junit.Test;
++import org.opensaml.xmlsec.signature.P;
+ 
+ import java.util.List;
+ import java.util.Map;
+@@ -29,8 +30,8 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
+         ));
+ 
+     @Test
+-    public void testCertInfo_Pass() throws Exception {
+-        initTestCluster();
++    public void testCertInfo_Pass_SSLOnly() throws Exception {
++        initTestCluster(true);
+         final RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+         rh.trustHTTPServerCertificate = true;
+@@ -45,8 +46,24 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
+     }
+ 
+     @Test
+-    public void testCertInfoFail_NonAdmin() throws Exception {
+-        initTestCluster();
++    public void testCertInfo_Pass_NotSSLOnly() throws Exception {
++        initTestCluster(false);
++        final RestHelper rh = restHelper();
++        rh.enableHTTPClientSSL = true;
++        rh.trustHTTPServerCertificate = true;
++        rh.sendAdminCertificate = true;
++        rh.keystore = "kirk-keystore.jks";
++
++        final RestHelper.HttpResponse transportInfoRestResponse = rh.executeGetRequest(ENDPOINT);
++        JSONObject expectedJsonResponse = new JSONObject();
++        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
++        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
++        Assert.assertEquals(expectedJsonResponse.toString(), transportInfoRestResponse.getBody());
++    }
++
++    @Test
++    public void testCertInfo_NonAdminFail_NotSSLOnly() throws Exception {
++        initTestCluster(false);
+         final RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+         rh.trustHTTPServerCertificate = true;
+@@ -61,12 +78,12 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
+     /**
+      * Helper method to initialize test cluster for CertInfoAction Tests
+      */
+-    private void initTestCluster() throws Exception {
++    private void initTestCluster(boolean sslOnly) throws Exception {
+         final Settings settings = Settings.builder()
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
+-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
+-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
+-            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
+@@ -74,7 +91,13 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
+             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, true)
++            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, sslOnly)
+             .build();
+-        setup(settings);
++
++        if (sslOnly) {
++            setupSslOnlyMode(settings);
++        } else {
++            setup(settings);
++        }
+     }
+ }
+diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
+index ffc05e5..5f1d3ed 100644
+--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/ssl/OpenDistroSecuritySSLReloadCertsActionTests.java
+@@ -48,13 +48,13 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+     );
+ 
+     @Test
+-    public void testReloadTransportSSLCertsPass() throws Exception {
++    public void testSSLReloadCerts_Pass_NonSSLOnly() throws Exception {
+         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+ 
+-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
+ 
+         RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+@@ -84,16 +84,32 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+         expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
+         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
++
++        // Test Valid Case: Change rest file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
++        reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
++
++        Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
++        expectedJsonResponse = new JSONObject();
++        expectedJsonResponse.appendField("message", "updated http certs");
++        Assert.assertEquals(expectedJsonResponse.toString(), reloadCertsResponse.getBody());
++
++        certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
++        expectedJsonResponse = new JSONObject();
++        expectedJsonResponse.appendField("http_certificates_list", NEW_NODE_CERT_DETAILS);
++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
++        Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
+     }
+ 
+     @Test
+-    public void testReloadHttpSSLCertsPass() throws Exception {
++    public void testSSLReloadCerts_Pass_SSLOnly() throws Exception {
+         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+ 
+-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, true);
+ 
+         RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+@@ -102,15 +118,32 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         rh.keystore = "ssl/reload/kirk-keystore.jks";
+ 
+         String certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
++
+         JSONObject expectedJsonResponse = new JSONObject();
+         expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+         expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
+         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
+ 
++        // Test Valid Case: Change transport file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++
++        Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
++        expectedJsonResponse = new JSONObject();
++        expectedJsonResponse.appendField("message", "updated transport certs");
++        Assert.assertEquals(expectedJsonResponse.toString(), reloadCertsResponse.getBody());
++
++        certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
++        expectedJsonResponse = new JSONObject();
++        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
++        Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
++
+         // Test Valid Case: Change rest file details to "ssl/pem/node-new.crt.pem" and "ssl/pem/node-new.key.pem"
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.crt.pem").toString(), pemCertFilePath);
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-new.key.pem").toString(), pemKeyFilePath);
+-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
++        reloadCertsResponse = rh.executePutRequest(RELOAD_HTTP_CERTS_ENDPOINT, null);
+ 
+         Assert.assertEquals(200, reloadCertsResponse.getStatusCode());
+         expectedJsonResponse = new JSONObject();
+@@ -120,43 +153,55 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         certDetailsResponse = rh.executeSimpleRequest(GET_CERT_DETAILS_ENDPOINT);
+         expectedJsonResponse = new JSONObject();
+         expectedJsonResponse.appendField("http_certificates_list", NEW_NODE_CERT_DETAILS);
+-        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
++        expectedJsonResponse.appendField("transport_certificates_list", NEW_NODE_CERT_DETAILS);
+         Assert.assertEquals(expectedJsonResponse.toString(), certDetailsResponse);
+     }
+ 
+     @Test
+-    public void testReloadHttpSSLCerts_FailWrongUri() throws Exception {
+-
++    public void testSSLReloadFail_InvalidCase_SSLOnly() throws Exception {
+         final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+         final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+ 
+-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, true);
+ 
++        // Test Invalid Case: Change transport file details to "ssl/pem/node-wrong.crt.pem"
+         RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+         rh.trustHTTPServerCertificate = true;
+         rh.sendAdminCertificate = true;
+         rh.keystore = "ssl/reload/kirk-keystore.jks";
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.key.pem").toString(), pemKeyFilePath);
+ 
+-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest("_opendistro/_security/api/ssl/wrong/reloadcerts", null);
++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++        Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
+         JSONObject expectedResponse = new JSONObject();
+-        // Note: toString and toJSONString replace / with \/. This helps get rid of the additional \ character.
+-        expectedResponse.put("message", "invalid uri path, please use /_opendistro/_security/api/ssl/http/reload or /_opendistro/_security/api/ssl/transport/reload");
+-        final String expectedResponseString = expectedResponse.toString().replace("\\", "");
+-        Assert.assertEquals(expectedResponseString, reloadCertsResponse.getBody());
+-    }
++        expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: " +
++            "New Certs do not have valid Issuer DN, Subject DN or SAN.]; nested: Exception[New Certs do not have valid Issuer DN, Subject DN or SAN.];");
++        Assert.assertEquals(expectedResponse.toString(), reloadCertsResponse.getBody());
++
++
++        // Test Invalid Case: Reloading with same certificates
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+ 
++        reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++        Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
++        expectedResponse = new JSONObject();
++        expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: New certificates should not expire before the current ones.]; nested: Exception[New certificates should not expire before the current ones.];");
++        Assert.assertEquals(expectedResponse.toString(), reloadCertsResponse.getBody());
++    }
+ 
+     @Test
+-    public void testSSLReloadFail_UnAuthorizedUser() throws Exception {
+-        final String transportPemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+-        final String transportPemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), transportPemCertFilePath);
+-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), transportPemKeyFilePath);
++    public void testSSLReloadFail_InvalidCase_NonSSLOnly() throws Exception {
++        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+ 
+-        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, true);
++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
+ 
+         // Test endpoint for non-admin user
+         RestHelper rh = restHelper();
+@@ -165,23 +210,12 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         rh.sendAdminCertificate = true;
+         rh.keystore = "ssl/reload/spock-keystore.jks";
+ 
+-        final RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+         Assert.assertEquals(401, reloadCertsResponse.getStatusCode());
+         Assert.assertEquals("Unauthorized", reloadCertsResponse.getStatusReason());
+-    }
+-
+-
+-    @Test
+-    public void testSSLReloadFail_InvalidDNAndDate() throws Exception {
+-        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
+-        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
+-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
+-        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
+-
+-        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true);
+ 
+         // Test Invalid Case: Change transport file details to "ssl/pem/node-wrong.crt.pem"
+-        RestHelper rh = restHelper();
++        rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+         rh.trustHTTPServerCertificate = true;
+         rh.sendAdminCertificate = true;
+@@ -189,7 +223,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.crt.pem").toString(), pemCertFilePath);
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node-wrong.key.pem").toString(), pemKeyFilePath);
+ 
+-        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
++        reloadCertsResponse = rh.executePutRequest(RELOAD_TRANSPORT_CERTS_ENDPOINT, null);
+         Assert.assertEquals(500, reloadCertsResponse.getStatusCode());
+         JSONObject expectedResponse = new JSONObject();
+         expectedResponse.appendField("error", "ElasticsearchSecurityException[Error while initializing transport SSL layer from PEM: java.lang.Exception: " +
+@@ -209,7 +243,31 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+     }
+ 
+     @Test
+-    public void testSSLReloadFail_NoReloadSet() throws Exception {
++    public void testHttpReloadSSLCerts_FailWrongUri_NonSSLOnly() throws Exception {
++
++        final String pemCertFilePath = testFolder.newFile("node-temp-cert.pem").getAbsolutePath();
++        final String pemKeyFilePath = testFolder.newFile("node-temp-key.pem").getAbsolutePath();
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.crt.pem").toString(), pemCertFilePath);
++        FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), pemKeyFilePath);
++
++        initTestCluster(pemCertFilePath, pemKeyFilePath, pemCertFilePath, pemKeyFilePath, true, false);
++
++        RestHelper rh = restHelper();
++        rh.enableHTTPClientSSL = true;
++        rh.trustHTTPServerCertificate = true;
++        rh.sendAdminCertificate = true;
++        rh.keystore = "ssl/reload/kirk-keystore.jks";
++
++        RestHelper.HttpResponse reloadCertsResponse = rh.executePutRequest("_opendistro/_security/api/ssl/wrong/reloadcerts", null);
++        JSONObject expectedResponse = new JSONObject();
++        // Note: toString and toJSONString replace / with \/. This helps get rid of the additional \ character.
++        expectedResponse.put("message", "invalid uri path, please use /_opendistro/_security/api/ssl/http/reload or /_opendistro/_security/api/ssl/transport/reload");
++        final String expectedResponseString = expectedResponse.toString().replace("\\", "");
++        Assert.assertEquals(expectedResponseString, reloadCertsResponse.getBody());
++    }
++
++    @Test
++    public void testSSLReloadFail_NoReloadSet_NonSSLOnly() throws Exception {
+         final File transportPemCertFile = testFolder.newFile("node-temp-cert.pem");
+         final File transportPemKeyFile = testFolder.newFile("node-temp-key.pem");
+         final String transportPemCertFilePath = transportPemCertFile.getAbsolutePath();
+@@ -218,7 +276,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+         FileHelper.copyFileContents(FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/node.key.pem").toString(), transportPemKeyFilePath);
+ 
+         // This is when SSLCertReload property is set to false
+-        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, false);
++        initTestCluster(transportPemCertFilePath, transportPemKeyFilePath, transportPemCertFilePath, transportPemKeyFilePath, false, false);
+ 
+         RestHelper rh = restHelper();
+         rh.enableHTTPClientSSL = true;
+@@ -243,14 +301,16 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+      * @param httpPemKeyFilePath Absolute Path to transport pem key file
+      * @param sslCertReload Sets the ssl cert reload flag
+      */
+-    private void initTestCluster(final String transportPemCertFilePath, final String transportPemKeyFilePath, final String httpPemCertFilePath, final String httpPemKeyFilePath, final boolean sslCertReload) throws Exception {
+-        final Settings settings = Settings.builder()
+-            .putList(ConfigConstants.OPENDISTRO_SECURITY_AUTHCZ_ADMIN_DN, "CN=kirk,OU=client,O=client,L=Test,C=DE")
+-            .putList(ConfigConstants.OPENDISTRO_SECURITY_NODES_DN, "C=DE,L=Test,O=Test,OU=SSL,CN=node-1.example.com")
++    private void initTestCluster(final String transportPemCertFilePath, final String transportPemKeyFilePath, final String httpPemCertFilePath, final String httpPemKeyFilePath,
++                                 final boolean sslCertReload, final boolean sslOnly) throws Exception {
++
++        final Settings.Builder settingsBuilder = Settings.builder()
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_ALIAS, "node-1")
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
++            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_KEYSTORE_ALIAS, "node-1")
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, transportPemCertFilePath)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, transportPemKeyFilePath)
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/root-ca.pem"))
+@@ -258,7 +318,7 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, httpPemKeyFilePath) // "ssl/reload/node.key.pem"
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/root-ca.pem"))
+             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, sslCertReload)
+-            .build();
++            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_ONLY, sslOnly);
+ 
+         final Settings initTransportClientSettings = Settings.builder()
+             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_TRUSTSTORE_FILEPATH,
+@@ -268,7 +328,13 @@ public class OpenDistroSecuritySSLReloadCertsActionTests extends SingleClusterTe
+                 FileHelper.getAbsoluteFilePathFromClassPath("ssl/reload/kirk-keystore.jks"))
+             .build();
+ 
+-        setup(initTransportClientSettings, new DynamicSecurityConfig(), settings, true, ClusterConfiguration.DEFAULT);
++        if (sslOnly){
++            setupSslOnlyMode(settingsBuilder.build());
++        } else {
++            settingsBuilder
++                .putList(ConfigConstants.OPENDISTRO_SECURITY_NODES_DN, "C=DE,L=Test,O=Test,OU=SSL,CN=node-1.example.com");
++            setup(initTransportClientSettings, new DynamicSecurityConfig(), settingsBuilder.build(), true, ClusterConfiguration.DEFAULT);
++        }
+     }
+ 
+ }
+diff --git a/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java b/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
+index 53411d7..4dd4e40 100644
+--- a/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
++++ b/src/test/java/com/amazon/opendistroforelasticsearch/security/test/AbstractSecurityUnitTest.java
+@@ -253,7 +253,7 @@ public abstract class AbstractSecurityUnitTest {
+         return new NodeSettingsSupplier() {
+             @Override
+             public Settings get(int i) {
+-                return minimumSecuritySettingsBuilder(i, true, false).put(other).build();
++                return minimumSecuritySettingsBuilder(i, true, hasCustomTransportSettings(other)).put(other).build();
+             }
+         };
+     }
+-- 
+2.12.2
+
