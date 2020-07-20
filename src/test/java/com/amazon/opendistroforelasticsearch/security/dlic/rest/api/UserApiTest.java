@@ -119,11 +119,6 @@ public class UserApiTest extends AbstractRestApiUnitTest {
         //Assert.assertTrue(settings.get(AbstractConfigurationValidator.INVALID_KEYS_KEY + ".keys").contains("some"));
         //Assert.assertTrue(settings.get(AbstractConfigurationValidator.INVALID_KEYS_KEY + ".keys").contains("other"));
 
-        // Get hidden role
-        response = rh.executeGetRequest("/_opendistro/_security/api/internalusers/hide" , new Header[0]);
-        Assert.assertEquals(HttpStatus.SC_OK, response.getStatusCode());
-        Assert.assertTrue(response.getBody().contains("\"hidden\":true"));
-
         // Associating with hidden role is not allowed
         response = rh.executePutRequest("/_opendistro/_security/api/internalusers/nagilum", "{ \"opendistro_security_roles\": [\"opendistro_security_hidden\"]}",
             new Header[0]);
@@ -567,6 +562,8 @@ public class UserApiTest extends AbstractRestApiUnitTest {
         response = rh.executePutRequest("/_opendistro/_security/api/internalusers/nagilum", "{ \"opendistro_security_roles\": [\"opendistro_security_reserved\"]}",
             new Header[0]);
         Assert.assertEquals(HttpStatus.SC_FORBIDDEN, response.getStatusCode());
+        Settings settings = Settings.builder().loadFromSource(response.getBody(), XContentType.JSON).build();
+        Assert.assertEquals(settings.get("message"), "Role 'opendistro_security_reserved' is read-only.");
 
         // Patch single hidden user
         response = rh.executePatchRequest("/_opendistro/_security/api/internalusers/hide", "[{ \"op\": \"add\", \"path\": \"/description\", \"value\": \"foo\" }]", new Header[0]);
@@ -575,8 +572,6 @@ public class UserApiTest extends AbstractRestApiUnitTest {
         // Patch multiple hidden users
         response = rh.executePatchRequest("/_opendistro/_security/api/internalusers", "[{ \"op\": \"add\", \"path\": \"/hide/description\", \"value\": \"foo\" }]", new Header[0]);
         Assert.assertEquals(HttpStatus.SC_BAD_REQUEST, response.getStatusCode());
-
->>>>>>> 41fcc023... Fix: Make sure Internal users API supports adding reserved opendistrosecurityroles (by superuser). Do not filter out reserved roles in the InternalUsersModelV7
     }
 
 }
