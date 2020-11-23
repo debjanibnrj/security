@@ -17,6 +17,7 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl;
 
+import com.amazon.opendistroforelasticsearch.security.ssl.util.X509UPNExtractorUtils;
 import com.amazon.opendistroforelasticsearch.security.support.PemKeyReader;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.handler.ssl.ApplicationProtocolConfig;
@@ -555,7 +556,7 @@ public class DefaultOpenDistroSecurityKeyStore implements OpenDistroSecurityKeyS
             final String subjectDn = cert !=null && cert.getSubjectX500Principal() != null ? cert.getSubjectX500Principal().getName() : "";
             String san = "";
             try {
-                san = cert !=null && cert.getSubjectAlternativeNames() != null ? cert.getSubjectAlternativeNames().toString() : "";
+                san = X509UPNExtractorUtils.getSANString(cert);
             } catch (CertificateParsingException e) {
                 log.error("Issue parsing SubjectAlternativeName:", e);
             }

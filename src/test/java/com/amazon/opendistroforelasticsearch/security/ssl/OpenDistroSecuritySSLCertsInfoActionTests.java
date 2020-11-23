@@ -59,6 +59,23 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
         Assert.assertEquals(expectedJsonResponse.toString(), transportInfoRestResponse.getBody());
     }
 
+
+    @Test
+    public void testCertInfo_Pass2() throws Exception {
+        initTestCluster2();
+        final RestHelper rh = restHelper();
+        rh.enableHTTPClientSSL = true;
+        rh.trustHTTPServerCertificate = true;
+        rh.sendAdminCertificate = true;
+        rh.keystore = "kirk-keystore.jks";
+
+        final RestHelper.HttpResponse transportInfoRestResponse = rh.executeGetRequest(ENDPOINT);
+        JSONObject expectedJsonResponse = new JSONObject();
+        expectedJsonResponse.appendField("http_certificates_list", NODE_CERT_DETAILS);
+        expectedJsonResponse.appendField("transport_certificates_list", NODE_CERT_DETAILS);
+        Assert.assertEquals(expectedJsonResponse.toString(), transportInfoRestResponse.getBody());
+    }
+
     @Test
     public void testCertInfoFail_NonAdmin() throws Exception {
         initTestCluster();
@@ -88,6 +105,26 @@ public class OpenDistroSecuritySSLCertsInfoActionTests extends SingleClusterTest
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMCERT_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.crt.pem"))
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/node-0.key.pem"))
             .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/root-ca.pem"))
+            .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, true)
+            .build();
+        setup(settings);
+    }
+
+    /**
+     * Helper method to initialize test cluster for CertInfoAction Tests
+     */
+    private void initTestCluster2() throws Exception {
+        final Settings settings = Settings.builder()
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENABLED, true)
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMCERT_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/temp/cert.crt"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMKEY_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/temp/cert.key"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_PEMTRUSTEDCAS_FILEPATH, FileHelper. getAbsoluteFilePathFromClassPath("ssl/temp/root-ca.pem"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION, false)
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_TRANSPORT_ENFORCE_HOSTNAME_VERIFICATION_RESOLVE_HOST_NAME, false)
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_ENABLED, true)
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMCERT_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/temp/cert.crt"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMKEY_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/temp/cert.key"))
+            .put(SSLConfigConstants.OPENDISTRO_SECURITY_SSL_HTTP_PEMTRUSTEDCAS_FILEPATH, FileHelper.getAbsoluteFilePathFromClassPath("ssl/temp/root-ca.pem"))
             .put(ConfigConstants.OPENDISTRO_SECURITY_SSL_CERT_RELOAD_ENABLED, true)
             .build();
         setup(settings);

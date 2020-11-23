@@ -17,6 +17,7 @@
 
 package com.amazon.opendistroforelasticsearch.security.ssl.util;
 
+import java.io.UnsupportedEncodingException;
 import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
@@ -24,12 +25,21 @@ import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
+
+import org.bouncycastle.asn1.ASN1InputStream;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.ASN1String;
+import org.bouncycastle.asn1.ASN1TaggedObject;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;

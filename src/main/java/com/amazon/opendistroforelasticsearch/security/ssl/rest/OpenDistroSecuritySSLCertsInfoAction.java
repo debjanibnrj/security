@@ -17,6 +17,7 @@ package com.amazon.opendistroforelasticsearch.security.ssl.rest;
 
 import com.amazon.opendistroforelasticsearch.security.configuration.AdminDNs;
 import com.amazon.opendistroforelasticsearch.security.ssl.OpenDistroSecurityKeyStore;
+import com.amazon.opendistroforelasticsearch.security.ssl.util.X509UPNExtractorUtils;
 import com.amazon.opendistroforelasticsearch.security.support.ConfigConstants;
 import com.amazon.opendistroforelasticsearch.security.user.User;
 import com.google.common.collect.ImmutableMap;
@@ -170,7 +171,7 @@ public class OpenDistroSecuritySSLCertsInfoAction extends BaseRestHandler {
 
                         String san = "";
                         try {
-                            san = cert !=null && cert.getSubjectAlternativeNames() != null ? cert.getSubjectAlternativeNames().toString() : "";
+                            san = X509UPNExtractorUtils.getSANString(cert);
                         } catch (CertificateParsingException e) {
                             log.error("Issue parsing SubjectAlternativeName:", e);
                         }
