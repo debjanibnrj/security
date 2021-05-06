@@ -110,6 +110,7 @@ public class ConfigConstants {
 
     
     public static final String OPENDISTRO_SECURITY_DEFAULT_CONFIG_INDEX = ".opendistro_security";
+    public static final String OPENDISTRO_SECURITY_DEFAULT_SESSION_INDEX = ".opendistro_security_session";
 
     public static final String OPENDISTRO_SECURITY_ENABLE_SNAPSHOT_RESTORE_PRIVILEGE = "opendistro_security.enable_snapshot_restore_privilege";
     public static final boolean OPENDISTRO_SECURITY_DEFAULT_ENABLE_SNAPSHOT_RESTORE_PRIVILEGE = true;
@@ -129,9 +130,10 @@ public class ConfigConstants {
 
     public static final String OPENDISTRO_SECURITY_AUTHCZ_ADMIN_DN = "opendistro_security.authcz.admin_dn";
     public static final String OPENDISTRO_SECURITY_CONFIG_INDEX_NAME = "opendistro_security.config_index_name";
+    public static final String OPENDISTRO_SECURITY_SESSION_INDEX_NAME = "opendistro_security.session_index_name";
     public static final String OPENDISTRO_SECURITY_AUTHCZ_IMPERSONATION_DN = "opendistro_security.authcz.impersonation_dn";
     public static final String OPENDISTRO_SECURITY_AUTHCZ_REST_IMPERSONATION_USERS="opendistro_security.authcz.rest_impersonation_user";
-    
+
     public static final String OPENDISTRO_SECURITY_AUDIT_TYPE_DEFAULT = "opendistro_security.audit.type";
     public static final String OPENDISTRO_SECURITY_AUDIT_CONFIG_DEFAULT = "opendistro_security.audit.config";
     public static final String OPENDISTRO_SECURITY_AUDIT_CONFIG_ROUTES = "opendistro_security.audit.routes";

@@ -55,6 +55,7 @@ import com.amazon.opendistroforelasticsearch.security.configuration.OpenDistroSe
 import com.amazon.opendistroforelasticsearch.security.configuration.PrivilegesInterceptorImpl;
 import com.amazon.opendistroforelasticsearch.security.configuration.Salt;
 import com.amazon.opendistroforelasticsearch.security.dlic.rest.api.OpenDistroSecurityRestApiActions;
+import com.amazon.opendistroforelasticsearch.security.session.SessionRepository;
 import com.amazon.opendistroforelasticsearch.security.ssl.rest.OpenDistroSecuritySSLReloadCertsAction;
 import com.amazon.opendistroforelasticsearch.security.ssl.rest.OpenDistroSecuritySSLCertsInfoAction;
 
@@ -187,6 +188,7 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin 
     private volatile PrivilegesEvaluator evaluator;
     private volatile ThreadPool threadPool;
     private volatile ConfigurationRepository cr;
+    private volatile SessionRepository sr;
     private volatile AdminDNs adminDns;
     private volatile ClusterService cs;
     private volatile AuditLog auditLog;
@@ -774,6 +776,7 @@ public final class OpenDistroSecurityPlugin extends OpenDistroSecuritySSLPlugin 
         adminDns = new AdminDNs(settings);
         
         cr = ConfigurationRepository.create(settings, this.configPath, threadPool, localClient, clusterService, auditLog);
+        sr = SessionRepository.create(settings, this.configPath, threadPool, localClient, clusterService, auditLog);
 
         final XFFResolver xffResolver = new XFFResolver(threadPool);
         backendRegistry = new BackendRegistry(settings, adminDns, xffResolver, auditLog, threadPool);
