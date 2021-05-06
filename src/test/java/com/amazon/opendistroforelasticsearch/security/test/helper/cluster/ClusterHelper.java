@@ -164,7 +164,7 @@ public final class ClusterHelper {
                         latch.countDown();
                     } catch (Exception e) {
                         e.printStackTrace();
-                        log.error("Unable to start node: "+e);
+                        log.error("Unable to start node: ", e);
                         err.set(e);
                         latch.countDown();
                     }
@@ -190,7 +190,7 @@ public final class ClusterHelper {
                         latch.countDown();
                     } catch (Exception e) {
                         e.printStackTrace();
-                        log.error("Unable to start node: "+e);
+                        log.error("Unable to start node: ", e);
                         err.set(e);
                         latch.countDown();
                     }
@@ -274,8 +274,7 @@ public final class ClusterHelper {
                 throw new IOException("cluster state is " + healthResponse.getStatus().name() + " with "
                         + healthResponse.getNumberOfNodes() + " nodes");
             } else {
-                log.debug("... cluster state ok " + healthResponse.getStatus().name() + " with "
-                        + healthResponse.getNumberOfNodes() + " nodes");
+                log.debug("... cluster state ok {} with {} nodes", healthResponse.getStatus().name(), healthResponse.getNumberOfNodes());
             }
 
             org.junit.Assert.assertEquals(expectedNodeCount, healthResponse.getNumberOfNodes());
@@ -360,7 +359,6 @@ public final class ClusterHelper {
                 .put("transport.tcp.port", tcpPort)
                 .put("http.port", httpPort)
                 //.put("http.enabled", true)
-                .put("cluster.routing.allocation.disk.threshold_enabled", false)
                 .put("http.cors.enabled", true)
                 .put("path.home", "./target");
     }
